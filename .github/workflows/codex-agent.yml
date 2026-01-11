@@ -1,126 +1,121 @@
-name: Codex Agent
+name: Codex Agent (comment-driven)
 
 on:
   issue_comment:
     types: [created]
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-
-concurrency:
-  group: codex-agent-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   codex:
-    # Dispara si:
-    # - alguien comenta @codex
-    # - o Vercel comenta "Deployment failed" con un error típico de build (auto-fix)
     if: >
       github.event.issue.pull_request &&
-      (
-        contains(github.event.comment.body, '@codex')
-        ||
-        (github.actor == 'vercel[bot]' && contains(github.event.comment.body, 'Deployment failed'))
-      )
-
+      contains(github.event.comment.body, '@codex') &&
+      github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    concurrency:
+      group: codex-pr-${{ github.event.issue.number }}
+      cancel-in-progress: true
+
     steps:
-      - name: Resolve PR head ref
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Load PR info
         id: pr
         uses: actions/github-script@v7
         with:
           github-token: ${{ github.token }}
           script: |
-            const prNumber = context.payload.issue.number;
-            const { data: pr } = await github.rest.pulls.get({
+            const pr = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: prNumber,
+              pull_number: context.payload.issue.number,
             });
-            core.setOutput('number', prNumber.toString());
-            core.setOutput('head_ref', pr.head.ref);
-            core.setOutput('head_sha', pr.head.sha);
-            core.setOutput('head_repo', pr.head.repo.full_name);
+            core.setOutput('head_repo', pr.data.head.repo.full_name);
+            core.setOutput('head_ref', pr.data.head.ref);
 
       - name: Checkout PR branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ steps.pr.outputs.head_repo }}
           ref: ${{ steps.pr.outputs.head_ref }}
           fetch-depth: 0
-          token: ${{ github.token }}
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
+      - name: Install deps (internet step)
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
-      # Importante: instalar deps antes de Codex porque su sandbox suele ir sin red
-      - name: Install dependencies (pre)
-        run: npm ci
+      - name: Build prompt
+        run: |
+          echo "=== KICKOFF ===" > .codex-prompt.txt
+          if [ -f .codex-kickoff ]; then cat .codex-kickoff >> .codex-prompt.txt; fi
+          echo "" >> .codex-prompt.txt
+          echo "=== USER COMMENT ===" >> .codex-prompt.txt
+          echo "${{ github.event.comment.body }}" >> .codex-prompt.txt
+          cat <<'EOF' >> .codex-prompt.txt
+
+          Rules:
+          - Cambios mínimos y seguros. No reestructures carpetas si no es imprescindible para el build.
+          - Si falta información (keys/env, decisiones de producto), NO inventes:
+            responde con "QUESTIONS:" y una lista corta, y para.
+          - Ejecuta SIEMPRE: npm run build
+          - Si build OK: commit + push a la rama del PR.
+          - Si build falla: NO comitees; deja el diagnóstico y el/los ficheros que faltan.
+
+          EOF
 
       - name: Run Codex
-        id: codex
+        id: run_codex
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          allow-bots: true
+          prompt-file: .codex-prompt.txt
           sandbox: workspace-write
-          prompt: |
-            Eres un agente de mantenimiento del repo.
-            1) Lee y sigue estrictamente el archivo .codex-kickoff (en la raíz).
-            2) Objetivo: dejar `npm run build` en verde.
-            3) Cambios mínimos y seguros.
-            4) Si te falta información (p.ej. variables de entorno, claves, URLs), NO inventes: escribe un comentario en el PR con preguntas concretas y termina.
-
-            Contexto del comentario que disparó el agente:
-            ---
-            ${{ github.event.comment.body }}
-            ---
-
-      # Por si Codex añadió deps: reinstala con lock actualizado (si aplica)
-      - name: Install dependencies (post)
-        run: npm ci
 
       - name: Build
+        id: build
+        continue-on-error: true
         run: npm run build
 
-      - name: Commit changes (if any)
+      - name: Commit & push (only if build is green)
+        if: steps.build.outcome == 'success'
         run: |
-          git status --porcelain
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "No changes to commit."
+          if git diff --quiet; then
+            echo "No changes."
             exit 0
           fi
-          git config user.name "codex-agent"
-          git config user.email "codex-agent@users.noreply.github.com"
+          git config user.name "codex-bot"
+          git config user.email "codex-bot@users.noreply.github.com"
           git add -A
-          git commit -m "chore: codex auto-fix build"
+          git commit -m "codex: apply requested changes"
+          git push
 
-      - name: Push changes (if any)
-        run: |
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "No changes to push."
-            exit 0
-          fi
-          git push origin HEAD:${{ steps.pr.outputs.head_ref }}
-
-      - name: Comment back to PR (Codex output)
-        if: steps.codex.outputs.final-message != ''
+      - name: Comment back (summary / questions)
+        if: always()
         uses: actions/github-script@v7
         env:
-          CODEX_FINAL_MESSAGE: ${{ steps.codex.outputs.final-message }}
+          CODEX_FINAL_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
         with:
           github-token: ${{ github.token }}
           script: |
+            const msg = process.env.CODEX_FINAL_MESSAGE || "(No message from Codex)";
+            const body = `Build: **${process.env.BUILD_OUTCOME}**\n\n${msg}`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: Number("${{ steps.pr.outputs.number }}"),
-              body: process.env.CODEX_FINAL_MESSAGE,
+              issue_number: context.payload.issue.number,
+              body,
             });
