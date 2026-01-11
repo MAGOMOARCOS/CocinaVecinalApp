@@ -3,43 +3,124 @@ name: Codex Agent
 on:
   issue_comment:
     types: [created]
-  workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: write
   issues: write
 
+concurrency:
+  group: codex-agent-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
 jobs:
-  run-agent:
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@codex'))
+  codex:
+    # Dispara si:
+    # - alguien comenta @codex
+    # - o Vercel comenta "Deployment failed" con un error típico de build (auto-fix)
+    if: >
+      github.event.issue.pull_request &&
+      (
+        contains(github.event.comment.body, '@codex')
+        ||
+        (github.actor == 'vercel[bot]' && contains(github.event.comment.body, 'Deployment failed'))
+      )
+
     runs-on: ubuntu-latest
 
-    env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Resolve PR head ref
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const prNumber = context.payload.issue.number;
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            core.setOutput('number', prNumber.toString());
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('head_repo', pr.head.repo.full_name);
 
-      - name: Set up Node.js
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pr.outputs.head_repo }}
+          ref: ${{ steps.pr.outputs.head_ref }}
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
-      - name: Install dependencies
-        run: npm ci || npm install
+      # Importante: instalar deps antes de Codex porque su sandbox suele ir sin red
+      - name: Install dependencies (pre)
+        run: npm ci
 
-      - name: Run Codex Agent
+      - name: Run Codex
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          allow-bots: true
+          sandbox: workspace-write
+          prompt: |
+            Eres un agente de mantenimiento del repo.
+            1) Lee y sigue estrictamente el archivo .codex-kickoff (en la raíz).
+            2) Objetivo: dejar `npm run build` en verde.
+            3) Cambios mínimos y seguros.
+            4) Si te falta información (p.ej. variables de entorno, claves, URLs), NO inventes: escribe un comentario en el PR con preguntas concretas y termina.
+
+            Contexto del comentario que disparó el agente:
+            ---
+            ${{ github.event.comment.body }}
+            ---
+
+      # Por si Codex añadió deps: reinstala con lock actualizado (si aplica)
+      - name: Install dependencies (post)
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Commit changes (if any)
         run: |
-          echo "🧠 Starting Codex Agent..."
-          npx @codex-ai/agent run \
-            --repo ${{ github.repository }} \
-            --ref ${{ github.ref_name }} \
-            --event ${{ github.event_name }} \
-            --comment "${{ github.event.comment.body }}" \
-            --token ${{ secrets.GITHUB_TOKEN }}
+          git status --porcelain
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git config user.name "codex-agent"
+          git config user.email "codex-agent@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: codex auto-fix build"
+
+      - name: Push changes (if any)
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No changes to push."
+            exit 0
+          fi
+          git push origin HEAD:${{ steps.pr.outputs.head_ref }}
+
+      - name: Comment back to PR (Codex output)
+        if: steps.codex.outputs.final-message != ''
+        uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ steps.codex.outputs.final-message }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number("${{ steps.pr.outputs.number }}"),
+              body: process.env.CODEX_FINAL_MESSAGE,
+            });
