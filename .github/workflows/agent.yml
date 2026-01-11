@@ -1,27 +1,39 @@
-name: Agent Setup
-
+name: Codex Agent
 on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - agent/**
+      - fix/**
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 jobs:
-  agent:
+  run-agent:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
 
-      - name: Install Node.js
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci || npm install
 
-      - name: Agent Task
+      - name: Run build (check for errors)
         run: |
-          echo "Agent starting..."
-          # Aquí podrá ejecutar tareas automáticas
-          # como crear /app, /lib, /components, etc.
+          npm run build || echo "BUILD_FAILED=true" >> $GITHUB_ENV
+
+      - name: Execute Codex Agent
+        if: env.BUILD_FAILED == 'true'
+        run: |
+          echo "🔧 Build failed. Invoking Codex Agent..."
+          node .github/agent/runner.js
