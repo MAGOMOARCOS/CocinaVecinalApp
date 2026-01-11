@@ -1,23 +1,42 @@
 // lib/types.ts
+
 export interface Listing {
-  id: string | number;
-  title?: string | null;
-  description?: string | null;
-  price?: number | string | null;
-  currency?: string | null;
-  user_id?: string | null;
-  created_at?: string | null;
-  image_url?: string | null;
-  [key: string]: unknown;
+  id: string;
+  title: string;
+  description: string | null;
+
+  // pricing
+  price_cents: number;
+  currency: string;
+  portions: number;
+
+  // location
+  neighborhood: string;
+  city: string;
+
+  // lifecycle
+  status: string; // "active" | "paused" | "sold_out" ... (si luego quieres lo tipamos)
+  user_id: string;
+  created_at: string | null;
+
+  image_url: string | null;
+
+  // Permite columnas extra sin romper TS (evita futuros "unknown")
+  [key: string]: any;
 }
 
 export interface Order {
-  id: string | number;
-  listing_id?: string | null;
-  buyer_id?: string | null;
-  seller_id?: string | null;
-  status?: string | null;
+  id: string;
+  listing_id: string;
+  buyer_id: string;
+  seller_id: string;
+
+  quantity: number;
+  total_cents: number;
+  status: string;
   created_at?: string | null;
+
   listing?: Listing | null;
-  [key: string]: unknown;
+
+  [key: string]: any;
 }
