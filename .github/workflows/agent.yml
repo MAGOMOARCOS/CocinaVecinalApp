@@ -1,17 +1,6 @@
-on:
-  workflow_dispatch:
-    inputs:
-      instruction:
-        required: false
-        type: string
-  issue_comment:
-    types: [created]
-
-jobs:
-  run-agent:
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issue_comment' &&
-       startsWith(github.event.comment.body, '/agent') &&
-       github.actor != 'vercel[bot]' &&
-       github.actor != 'github-actions[bot]')
+if: >
+  github.event_name == 'workflow_dispatch' ||
+  (github.event_name == 'issue_comment' &&
+   startsWith(github.event.comment.body, '/agent') &&
+   github.actor != 'vercel[bot]' &&
+   github.actor != 'github-actions[bot]')
