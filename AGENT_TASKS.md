@@ -1,3 +1,6 @@
+@codex Arregla el build que falla en Vercel (module not found tipo "@/lib/supabaseClient").
+Haz commits en esta rama hasta dejar `npm run build` en verde. Cambios mínimos.
+
 # Instrucciones del agente
 
 1. Verificar que exista carpeta `/app` con `layout.tsx` y `page.tsx`.
