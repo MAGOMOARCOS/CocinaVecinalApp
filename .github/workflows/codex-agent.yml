@@ -1,0 +1,104 @@
+name: Codex Agent (comment-driven)
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  codex:
+    if: github.event.issue.pull_request && contains(github.event.comment.body, '@codex')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Load PR info
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.issue.number,
+            });
+            core.setOutput('head_repo', pr.data.head.repo.full_name);
+            core.setOutput('head_ref', pr.data.head.ref);
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ steps.pr.outputs.head_repo }}
+          ref: ${{ steps.pr.outputs.head_ref }}
+          fetch-depth: 0
+
+      # Importante: instala deps ANTES de Codex.
+      # Codex suele correr en sandbox sin red, así que lo que requiera internet va antes. :contentReference[oaicite:1]{index=1}
+      - name: Install deps
+        run: npm ci
+
+      - name: Build prompt
+        run: |
+          echo "=== KICKOFF ===" > .codex-prompt.txt
+          if [ -f .codex-kickoff ]; then cat .codex-kickoff >> .codex-prompt.txt; fi
+          echo "" >> .codex-prompt.txt
+          echo "=== USER COMMENT ===" >> .codex-prompt.txt
+          echo "${{ github.event.comment.body }}" >> .codex-prompt.txt
+          cat <<'EOF' >> .codex-prompt.txt
+
+          Rules:
+          - Cambios mínimos, sin reestructurar todo si no es necesario.
+          - Si falta información (keys/env, decisiones de producto), NO inventes:
+            responde con "QUESTIONS:" y una lista corta, y para.
+          - Ejecuta: npm run build
+          - Si build OK: commit + push a la rama del PR.
+          - Si build falla: no comitees; explica el error y qué necesitas.
+
+          EOF
+
+      - name: Run Codex
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .codex-prompt.txt
+          sandbox: workspace-write
+
+      - name: Build
+        id: build
+        continue-on-error: true
+        run: npm run build
+
+      - name: Commit & push (only if build is green)
+        if: steps.build.outcome == 'success'
+        run: |
+          if git diff --quiet; then
+            echo "No changes."
+            exit 0
+          fi
+          git config user.name "codex-bot"
+          git config user.email "codex-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "codex: apply requested changes"
+          git push
+
+      - name: Comment back (summary / questions)
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const msg = process.env.CODEX_FINAL_MESSAGE || "(No message from Codex)";
+            const body = `Build: **${process.env.BUILD_OUTCOME}**\n\n${msg}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body,
+            });
