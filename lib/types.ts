@@ -1,5 +1,5 @@
 // lib/types.ts
-
+export type Role = "buyer" | "cook" | "both";
 export interface Listing {
   id: string;
   title: string;
