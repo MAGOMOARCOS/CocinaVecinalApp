@@ -1,104 +1,45 @@
-name: Codex Agent (comment-driven)
+name: Codex Agent
 
 on:
   issue_comment:
     types: [created]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
-  codex:
-    if: github.event.issue.pull_request && contains(github.event.comment.body, '@codex')
+  run-agent:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@codex'))
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
+
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - name: Load PR info
-        id: pr
-        uses: actions/github-script@v7
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          github-token: ${{ github.token }}
-          script: |
-            const pr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.issue.number,
-            });
-            core.setOutput('head_repo', pr.data.head.repo.full_name);
-            core.setOutput('head_ref', pr.data.head.ref);
+          node-version: 20
 
-      - name: Checkout PR branch
-        uses: actions/checkout@v5
-        with:
-          repository: ${{ steps.pr.outputs.head_repo }}
-          ref: ${{ steps.pr.outputs.head_ref }}
-          fetch-depth: 0
+      - name: Install dependencies
+        run: npm ci || npm install
 
-      # Importante: instala deps ANTES de Codex.
-      # Codex suele correr en sandbox sin red, así que lo que requiera internet va antes. :contentReference[oaicite:1]{index=1}
-      - name: Install deps
-        run: npm ci
-
-      - name: Build prompt
+      - name: Run Codex Agent
         run: |
-          echo "=== KICKOFF ===" > .codex-prompt.txt
-          if [ -f .codex-kickoff ]; then cat .codex-kickoff >> .codex-prompt.txt; fi
-          echo "" >> .codex-prompt.txt
-          echo "=== USER COMMENT ===" >> .codex-prompt.txt
-          echo "${{ github.event.comment.body }}" >> .codex-prompt.txt
-          cat <<'EOF' >> .codex-prompt.txt
-
-          Rules:
-          - Cambios mínimos, sin reestructurar todo si no es necesario.
-          - Si falta información (keys/env, decisiones de producto), NO inventes:
-            responde con "QUESTIONS:" y una lista corta, y para.
-          - Ejecuta: npm run build
-          - Si build OK: commit + push a la rama del PR.
-          - Si build falla: no comitees; explica el error y qué necesitas.
-
-          EOF
-
-      - name: Run Codex
-        id: run_codex
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: .codex-prompt.txt
-          sandbox: workspace-write
-
-      - name: Build
-        id: build
-        continue-on-error: true
-        run: npm run build
-
-      - name: Commit & push (only if build is green)
-        if: steps.build.outcome == 'success'
-        run: |
-          if git diff --quiet; then
-            echo "No changes."
-            exit 0
-          fi
-          git config user.name "codex-bot"
-          git config user.email "codex-bot@users.noreply.github.com"
-          git add -A
-          git commit -m "codex: apply requested changes"
-          git push
-
-      - name: Comment back (summary / questions)
-        if: always()
-        uses: actions/github-script@v7
-        env:
-          CODEX_FINAL_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
-          BUILD_OUTCOME: ${{ steps.build.outcome }}
-        with:
-          github-token: ${{ github.token }}
-          script: |
-            const msg = process.env.CODEX_FINAL_MESSAGE || "(No message from Codex)";
-            const body = `Build: **${process.env.BUILD_OUTCOME}**\n\n${msg}`;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.issue.number,
-              body,
-            });
+          echo "🧠 Starting Codex Agent..."
+          npx @codex-ai/agent run \
+            --repo ${{ github.repository }} \
+            --ref ${{ github.ref_name }} \
+            --event ${{ github.event_name }} \
+            --comment "${{ github.event.comment.body }}" \
+            --token ${{ secrets.GITHUB_TOKEN }}
