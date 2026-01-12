@@ -23,7 +23,6 @@ concurrency:
 jobs:
   run-agent:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,12 +51,10 @@ jobs:
           fi
 
       - name: Run Codex (apply changes)
-        id: run_codex
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           prompt-file: .codex_prompt.md
-          output-file: codex-output.md
           codex-args: '["--full-auto"]'
           safety-strategy: drop-sudo
           sandbox: workspace-write
@@ -65,32 +62,43 @@ jobs:
       - name: Install deps + build (MUST pass before PR)
         shell: bash
         run: |
+          set -e
+
+          # Si hay lockfile, intentamos npm ci (reproducible).
+          # Si falla por des-sync, regeneramos lock con npm install.
           if [ -f package-lock.json ]; then
-            npm ci
+            echo "Detected package-lock.json -> trying npm ci"
+            if npm ci; then
+              echo "npm ci OK"
+            else
+              echo "npm ci failed (lock out of sync). Regenerating lock with npm install..."
+              npm install
+            fi
           else
+            echo "No lockfile -> npm install"
             npm install
           fi
+
           npm run build
 
       - name: Commit changes (if any) + push branch
         shell: bash
         run: |
           if [ -z "$(git status --porcelain)" ]; then
-            echo "HAS_CHANGES=0" >> $GITHUB_ENV
             echo "No changes to commit."
+            echo "CHANGED=false" >> $GITHUB_ENV
             exit 0
           fi
-
-          echo "HAS_CHANGES=1" >> $GITHUB_ENV
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "agent: apply AGENT_TASKS"
           git push --set-upstream origin "$BRANCH"
+          echo "CHANGED=true" >> $GITHUB_ENV
 
       - name: Open PR
-        if: env.HAS_CHANGES == '1'
+        if: env.CHANGED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -105,10 +113,3 @@ jobs:
             --head "$BRANCH" \
             --title "agent: apply AGENT_TASKS" \
             --body "Automated changes from Codex Agent. Build passed in workflow run."
-
-      - name: Upload Codex output (optional)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: codex-output
-          path: codex-output.md
