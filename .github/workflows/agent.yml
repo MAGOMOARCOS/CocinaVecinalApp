@@ -1,3 +1,20 @@
+Implementa el MVP de CocinaVecinalApp por fases, SIN romper build.
+
+Reglas:
+- 1 PR = 1 objetivo (pequeño e incremental). Rama: agent/<slug>.
+- Antes de abrir PR: npm run build debe pasar.
+- No añadir secrets al repo. Usar variables de entorno ya previstas.
+- Si falta info para avanzar: escribe QUESTIONS (máx 5) en el PR y PARA.
+
+Orden de ejecución (empieza SOLO por el primer punto en este PR):
+P3-01 Home: lista de listings publicados + búsqueda simple.
+- Endpoint/consulta Supabase: solo publicados, orden por created_at desc.
+- UI en Home con input de búsqueda (client-side) filtrando por título/descripcion.
+- Estados loading/empty/error coherentes.
+- Tests/lint si existen.
+
+Al terminar: abre PR con resumen + archivos tocados.
+
 name: Agent (CocinaVecinal)
 
 on:
