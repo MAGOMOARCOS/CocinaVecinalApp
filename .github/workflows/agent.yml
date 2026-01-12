@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -49,14 +49,16 @@ jobs:
             cp AGENT_TASKS.md .codex_prompt.md
           fi
 
+      - name: Install Codex CLI
+        shell: bash
+        run: npm i -g @openai/codex
+
       - name: Run Codex (apply changes)
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: .codex_prompt.md
-          codex-args: '["--full-auto"]'
-          safety-strategy: drop-sudo
-          sandbox: workspace-write
+        shell: bash
+        env:
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          codex exec --full-auto --sandbox workspace-write "$(cat .codex_prompt.md)"
 
       - name: Install deps + build (MUST pass before PR)
         shell: bash
