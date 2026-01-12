@@ -1,41 +1,30 @@
 "use client";
 
-import { useEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 
 export default function AuthCallbackPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
 
   useEffect(() => {
-    let cancelled = false;
-
     const run = async () => {
-      try {
-        const code = searchParams.get("code");
-        if (code) {
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error) console.error("[auth/callback] exchange error:", error);
-        }
-      } catch (e) {
-        console.error("[auth/callback] unexpected error:", e);
-      } finally {
-        if (!cancelled) router.replace("/");
-      }
+      // En supabase-js v2, tras volver del redirect, la sesión se hidrata sola.
+      // Aquí solo “esperamos un tick” y redirigimos.
+      await supabase.auth.getSession();
+      router.replace("/"); // o "/onboarding" si prefieres
     };
 
-    run();
-    return () => {
-      cancelled = true;
-    };
-  }, [router, searchParams]);
+    run().catch(() => {
+      router.replace("/login");
+    });
+  }, [router]);
 
   return (
-    <main className="mx-auto max-w-md p-6">
-      <h1 className="text-lg font-semibold">Completando inicio de sesión…</h1>
-      <p className="mt-2 text-sm text-neutral-600">
-        Si no redirige automáticamente, puedes cerrar esta pestaña.
+    <main className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+      <h1 className="text-xl font-semibold">Completando inicio de sesión…</h1>
+      <p className="text-sm text-neutral-600">
+        Un momento, te estamos redirigiendo.
       </p>
     </main>
   );
