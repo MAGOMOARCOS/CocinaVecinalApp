@@ -23,6 +23,7 @@ concurrency:
 jobs:
   run-agent:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,6 +36,7 @@ jobs:
           node-version: "20"
 
       - name: Create working branch
+        shell: bash
         run: |
           BRANCH="agent/run-${GITHUB_RUN_ID}"
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
@@ -49,16 +51,16 @@ jobs:
             cp AGENT_TASKS.md .codex_prompt.md
           fi
 
-      - name: Install Codex CLI
-        shell: bash
-        run: npm i -g @openai/codex
-
       - name: Run Codex (apply changes)
-        shell: bash
-        env:
-          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          codex exec --full-auto --sandbox workspace-write "$(cat .codex_prompt.md)"
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .codex_prompt.md
+          output-file: codex-output.md
+          codex-args: '["--full-auto"]'
+          safety-strategy: drop-sudo
+          sandbox: workspace-write
 
       - name: Install deps + build (MUST pass before PR)
         shell: bash
@@ -74,9 +76,12 @@ jobs:
         shell: bash
         run: |
           if [ -z "$(git status --porcelain)" ]; then
+            echo "HAS_CHANGES=0" >> $GITHUB_ENV
             echo "No changes to commit."
             exit 0
           fi
+
+          echo "HAS_CHANGES=1" >> $GITHUB_ENV
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -85,9 +90,10 @@ jobs:
           git push --set-upstream origin "$BRANCH"
 
       - name: Open PR
-        if: success()
+        if: env.HAS_CHANGES == '1'
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
             echo "PR already exists for $BRANCH"
@@ -99,3 +105,10 @@ jobs:
             --head "$BRANCH" \
             --title "agent: apply AGENT_TASKS" \
             --body "Automated changes from Codex Agent. Build passed in workflow run."
+
+      - name: Upload Codex output (optional)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-output
+          path: codex-output.md
