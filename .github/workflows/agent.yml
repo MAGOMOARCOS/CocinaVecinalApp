@@ -1,7 +1,199 @@
 name: Agent (CocinaVecinal)
 
 on:
+  workflow_dispatchname: Agent (CocinaVecinal)
+
+on:
   workflow_dispatch:
+    inputs:
+      instruction:
+        description: "Orden para el agente (si vacío, usará AGENT_TASKS.md)"
+        required: false
+        type: string
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: agent-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  agent:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      final_message: ${{ steps.codex.outputs.final-message }}
+      pr_url: ${{ steps.cpr.outputs.pull-request-url }}
+      pr_number: ${{ steps.cpr.outputs.pull-request-number }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Compute instruction
+        id: instr
+        shell: bash
+        env:
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+
+          INSTR=""
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            INSTR="${{ github.event.inputs.instruction || '' }}"
+          else
+            # Issue/PR comment: extrae texto tras la primera línea "/agent"
+            INSTR="$(python - <<'PY'
+import os, re
+body=os.environ.get("BODY","") or ""
+m=re.search(r'(?m)^\s*/agent\b\s*(.*)$', body)
+if not m:
+    print("")
+    raise SystemExit
+first=m.group(1).strip()
+rest=body[m.end():].strip()
+out=(first + "\n" + rest).strip()
+print(out)
+PY
+)"
+          fi
+
+          if [[ -z "${INSTR// }" ]]; then
+            if [[ -f "AGENT_TASKS.md" ]]; then
+              INSTR="$(cat AGENT_TASKS.md)"
+            else
+              INSTR="Fix build (npm run build) and keep CI green."
+            fi
+          fi
+
+          echo "instruction<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$INSTR" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps
+        run: |
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Write Codex prompt
+        run: |
+          cat > .codex_prompt.txt <<'PROMPT'
+          You are an autonomous coding agent working in a GitHub Actions runner.
+
+          Hard rules:
+          - NEVER push to main directly. Prepare changes suitable for a PR.
+          - Keep the build green: run npm run build successfully before finishing.
+          - Do not add secrets/keys to the repo. Never print secrets.
+          - Prefer small, incremental changes. Only touch files required for the task.
+
+          Task:
+          PROMPT
+          printf "%s\n" "${{ steps.instr.outputs.instruction }}" >> .codex_prompt.txt
+          cat >> .codex_prompt.txt <<'PROMPT'
+
+          Repo context:
+          - Tech: Next.js app.
+          - Goal: professional MVP without breaking build.
+          - After implementing, run:
+            - npm run lint (if available)
+            - npm run build
+
+          When done:
+          - Provide a concise summary + list of files changed.
+          - If you cannot proceed due to missing info, state exactly what is missing and stop.
+          PROMPT
+
+      - name: Run Codex
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .codex_prompt.txt
+          sandbox: workspace-write
+          safety-strategy: drop-sudo
+          allow-users: MAGOMOARCOS
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://example.supabase.co' }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'anon-placeholder' }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || 'service-placeholder' }}
+
+      - name: Cleanup prompt file
+        if: always()
+        run: rm -f .codex_prompt.txt
+
+      - name: Validate (lint/build)
+        run: |
+          if npm run -s | grep -qE '^  lint'; then
+            npm run lint
+          fi
+          npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://example.supabase.co' }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'anon-placeholder' }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || 'service-placeholder' }}
+
+      - name: Create PR
+        id: cpr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ github.token }}
+          commit-message: "agent: apply instruction"
+          title: "agent: update from /agent"
+          body: |
+            Automated changes produced by Codex.
+
+            Trigger: ${{ github.event_name }}
+            Actor: ${{ github.actor }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Codex output:
+            ---
+            ${{ steps.codex.outputs.final-message }}
+          branch: agent/${{ github.run_id }}
+          base: main
+          delete-branch: true
+
+      - name: Comment back with result
+        if: github.event_name == 'issue_comment' && steps.cpr.outputs.pull-request-url != ''
+        uses: actions/github-script@v7
+        env:
+          PR_URL: ${{ steps.cpr.outputs.pull-request-url }}
+          FINAL: ${{ steps.codex.outputs.final-message }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const body = [
+              `✅ He creado un PR: ${process.env.PR_URL}`,
+              ``,
+              `---`,
+              (process.env.FINAL || '')
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body
+            });
+:
     inputs:
       instruction:
         description: "Orden para el agente (si vacío, leerá AGENT_TASKS.md)"
