@@ -2,32 +2,98 @@ name: Codex Agent
 
 on:
   workflow_dispatch:
+    inputs:
+      instruction:
+        description: "Si lo dejas vacío, usa AGENT_TASKS.md"
+        required: false
+        type: string
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
-      - ".github/workflows/agent.yml"
       - "AGENT_TASKS.md"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: codex-agent-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   run-agent:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
-      - name: Set up Node.js
+      - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run Codex Agent
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create working branch
         run: |
-          echo "🔧 Ejecutando Codex Agent..."
-          npx @codex-ai/agent run --tasks AGENT_TASKS.md
+          BRANCH="agent/run-${GITHUB_RUN_ID}"
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          git checkout -b "$BRANCH"
+
+      - name: Prepare prompt
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.instruction }}" ]; then
+            printf "%s\n" "${{ inputs.instruction }}" > .codex_prompt.md
+          else
+            cp AGENT_TASKS.md .codex_prompt.md
+          fi
+
+      - name: Run Codex (apply changes)
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .codex_prompt.md
+          codex-args: '["--full-auto"]'
+          safety-strategy: drop-sudo
+          sandbox: workspace-write
+
+      - name: Install deps + build (MUST pass before PR)
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+          npm run build
+
+      - name: Commit changes (if any) + push branch
+        shell: bash
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "agent: apply AGENT_TASKS"
+          git push --set-upstream origin "$BRANCH"
+
+      - name: Open PR
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            echo "PR already exists for $BRANCH"
+            exit 0
+          fi
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "agent: apply AGENT_TASKS" \
+            --body "Automated changes from Codex Agent. Build passed in workflow run."
