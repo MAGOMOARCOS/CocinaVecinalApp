@@ -13,8 +13,8 @@ export default function Home() {
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setMessage(null);
     setError(null);
+    setMessage(null);
 
     const fd = new FormData(e.currentTarget);
     const name = String(fd.get('name') || '').trim();
@@ -50,13 +50,17 @@ export default function Home() {
         (data as { message?: string })?.message ||
         'No pudimos procesar tu solicitud';
 
-      if ((data as { ok?: boolean })?.ok) {
-        setMessage(apiMessage);
+      if (response.ok && (data as { ok?: boolean })?.ok) {
+        setError(null);
+        setMessage('Gracias, estás en la lista');
         e.currentTarget.reset();
-      } else {
-        setError(apiMessage);
+        return;
       }
+
+      setMessage(null);
+      setError(apiMessage);
     } catch (err) {
+      setMessage(null);
       setError('Error al enviar el formulario');
     }
   }
