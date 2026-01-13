@@ -3,112 +3,169 @@ name: Codex Agent
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "preflight = GRATIS (solo simula). full = Preflight GRATIS y si pasa, ejecuta Codex (CUESTA)."
+        required: true
+        default: "preflight"
+        type: choice
+        options:
+          - "preflight"
+          - "full"
       instruction:
-        description: "Si lo dejas vacío, usa AGENT_TASKS.md"
+        description: "Opcional. Si está vacío, usa AGENT_TASKS.md"
         required: false
         type: string
+
   push:
-    branches: [main]
     paths:
       - "AGENT_TASKS.md"
+
+concurrency:
+  group: codex-agent-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
   pull-requests: write
-
-concurrency:
-  group: codex-agent-${{ github.ref }}
-  cancel-in-progress: false
+  issues: write
 
 jobs:
   run-agent:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Node
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
 
-      - name: Create working branch
-        shell: bash
+      - name: Create unique agent branch
         run: |
-          BRANCH="agent/run-${GITHUB_RUN_ID}"
-          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          set -euo pipefail
+          BRANCH="agent/run-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
           git checkout -b "$BRANCH"
 
+      # =========================
+      # PRE-RUN (GRATIS): si falla aquí, NO se llama a Codex
+      # =========================
+      - name: Preflight (FREE): npm install + build must pass
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm run build
+
+      # =========================
+      # RUN (CON COSTE) solo si workflow_dispatch + mode=full
+      # =========================
       - name: Prepare prompt
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
         shell: bash
         run: |
+          set -euo pipefail
           if [ -n "${{ inputs.instruction }}" ]; then
             printf "%s\n" "${{ inputs.instruction }}" > .codex_prompt.md
           else
             cp AGENT_TASKS.md .codex_prompt.md
           fi
 
-      - name: Install Codex CLI
-        shell: bash
-        run: npm i -g @openai/codex
+          cat >> .codex_prompt.md <<'EOF'
 
-      - name: Run Codex (apply changes)
-        shell: bash
+Hard constraints (MUST):
+- DO NOT create/edit anything under .github/workflows/
+- Keep changes minimal.
+- Ensure `npm install` + `npm run build` succeed on GitHub Actions.
+EOF
+
+      - name: Install Codex CLI
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
+        run: npm install -g @openai/codex
+
+      - name: Run Codex (apply changes)  # 💸 AQUÍ ES DONDE CUESTA
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CODEX_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
+          set -euo pipefail
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "ERROR: Missing repo secret OPENAI_API_KEY"
+            exit 1
+          fi
+
           codex exec --full-auto --sandbox workspace-write "$(cat .codex_prompt.md)"
 
-      - name: Install deps + build (MUST pass before PR)
-        shell: bash
+      # Airbag: jamás permitir cambios en workflows
+      - name: Block workflow edits (hard revert)
         run: |
-          set -e
-          # Evita el bucle típico: package-lock existe pero está desincronizado
-          if [ -f package-lock.json ]; then
-            npm ci || npm install
-          else
-            npm install
-          fi
+          set -euo pipefail
+          git restore --staged --worktree .github/workflows 2>/dev/null || true
+          git checkout -- .github/workflows 2>/dev/null || true
+
+      # Rebuild solo si Codex corrió
+      - name: Build again (post-Codex)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
           npm run build
 
-      - name: Block workflow edits (never commit .github/workflows changes)
-        shell: bash
-        run: |
-          # Aunque Codex toque workflows, NO se permite pushearlos (evita el "remote rejected")
-          if [ -d ".github/workflows" ]; then
-            git restore --staged --worktree .github/workflows || true
-          fi
-
       - name: Commit changes (if any) + push branch
-        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
+          # No subas archivos temporales del agente
+          rm -f .codex_prompt.md codex-output.md || true
+
           if [ -z "$(git status --porcelain)" ]; then
             echo "No changes to commit."
+            echo "PUSHED=false" >> "$GITHUB_ENV"
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add -A
           git commit -m "agent: apply AGENT_TASKS"
-          git push --set-upstream origin "$BRANCH"
+
+          # Push robusto contra reruns / ramas existentes
+          if git push -u origin "$BRANCH"; then
+            echo "PUSHED=true" >> "$GITHUB_ENV"
+          else
+            git push -u origin "$BRANCH" --force-with-lease
+            echo "PUSHED=true" >> "$GITHUB_ENV"
+          fi
 
       - name: Open PR
-        # Si tu repo bloquea PRs desde Actions, NO tiramos el run.
-        continue-on-error: true
+        if: ${{ env.PUSHED == 'true' && github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
-            echo "PR already exists for $BRANCH"
-            exit 0
-          fi
-
+          set -euo pipefail
           gh pr create \
+            --title "Codex Agent: apply AGENT_TASKS" \
+            --body "Automated changes. Build passed in workflow." \
             --base main \
-            --head "$BRANCH" \
-            --title "agent: apply AGENT_TASKS" \
-            --body "Automated changes from Codex Agent. Build passed in workflow run."
+            --head "$BRANCH"
+
+      - name: On failure, open issue with run link
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Codex Agent failed (run ${context.runId} attempt ${context.runAttempt})`,
+              body: `Run: ${runUrl}\n\nFix preflight/build or update AGENT_TASKS.md with the exact failing lines.`
+            });
