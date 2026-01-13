@@ -2,24 +2,19 @@ name: Codex Agent
 
 on:
   workflow_dispatch:
-    inputs:
-      instruction:
-        description: "Si lo dejas vacío, usa AGENT_TASKS.md"
-        required: false
-        type: string
   push:
     branches: [main]
     paths:
-      - "AGENT_TASKS.md"
+      - AGENT_TASKS.md
+
+concurrency:
+  group: codex-agent-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
   pull-requests: write
   issues: write
-
-concurrency:
-  group: codex-agent-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
   run-agent:
@@ -30,75 +25,62 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
       - name: Create working branch
-        shell: bash
         run: |
-          BRANCH="agent/run-${GITHUB_RUN_ID}"
+          BRANCH="agent/run-${{ github.run_id }}"
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
           git checkout -b "$BRANCH"
 
-      - name: Prepare prompt
-        shell: bash
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Ejecuta Codex usando AGENT_TASKS.md como prompt
+      - name: Run Codex (apply changes)
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: AGENT_TASKS.md
+          sandbox: workspace-write
+          output-file: codex-output.md
+          codex-args: '["--full-auto"]'
+
+      # Blindaje: NUNCA permitir cambios en workflows (evita el remote rejected)
+      - name: Guard rails (never change workflows)
         run: |
-          if [ -n "${{ inputs.instruction }}" ]; then
-            printf "%s\n" "${{ inputs.instruction }}" > .codex_prompt.md
-          else
-            cp AGENT_TASKS.md .codex_prompt.md
+          set -euo pipefail
+          if [ -n "$(git status --porcelain .github/workflows)" ]; then
+            echo "Reverting changes under .github/workflows ..."
+            git restore --staged --worktree .github/workflows
           fi
 
-      - name: Install Codex CLI
-        shell: bash
-        run: npm i -g @openai/codex
-
-      - name: Run Codex (apply changes)
-        shell: bash
-        env:
-          # usa el nombre estándar (y compatible con ejemplos oficiales)
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # por compatibilidad adicional (si alguna versión mira esto)
-          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          codex exec --full-auto --sandbox workspace-write "$(cat .codex_prompt.md)"
-
-      # 🔒 Blindaje: NUNCA permitir que el agente toque workflows (evita el "remote rejected ... workflows permission")
-      - name: Protect workflows (hard restore)
-        shell: bash
-        run: |
-          git restore --source=HEAD --staged --worktree .github/workflows || true
-          git checkout -- .github/workflows || true
-
-          # Limpieza: no queremos commitear prompts/salidas del agente
-          rm -f .codex_prompt.md codex-output.md || true
-          git restore --source=HEAD --staged --worktree .codex_prompt.md codex-output.md 2>/dev/null || true
-
+      # Build robusto: si npm ci falla por lock desincronizado -> npm install
       - name: Install deps + build (MUST pass before PR)
-        shell: bash
         run: |
-          set -e
+          set -euo pipefail
+          npm config set fund false
+          npm config set audit false
+
           if [ -f package-lock.json ]; then
-            # Si npm ci falla por lock desincronizado, lo arreglamos con npm install
-            npm ci || (echo "npm ci failed -> syncing lockfile with npm install" && npm install)
+            npm ci || (echo "npm ci failed -> running npm install to resync lock" && npm install)
           else
             npm install
           fi
+
           npm run build
 
       - name: Commit changes (if any) + push branch
-        shell: bash
         run: |
-          # Re-aplica blindaje por seguridad antes de commitear
-          git restore --source=HEAD --staged --worktree .github/workflows || true
-          git checkout -- .github/workflows || true
+          set -euo pipefail
+          echo "PUSHED=false" >> $GITHUB_ENV
+
+          # opcional: no meter artefactos del agente en el repo
           rm -f .codex_prompt.md codex-output.md || true
 
           if [ -z "$(git status --porcelain)" ]; then
             echo "No changes to commit."
-            echo "NO_CHANGES=true" >> $GITHUB_ENV
             exit 0
           fi
 
@@ -107,30 +89,22 @@ jobs:
           git add -A
           git commit -m "agent: apply AGENT_TASKS"
           git push --set-upstream origin "$BRANCH"
-          echo "NO_CHANGES=false" >> $GITHUB_ENV
+          echo "PUSHED=true" >> $GITHUB_ENV
 
       - name: Open PR
-        if: env.NO_CHANGES != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
-            echo "PR already exists for $BRANCH"
-            exit 0
-          fi
-
-          gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --title "agent: apply AGENT_TASKS" \
-            --body "Automated changes from Codex Agent. Build passed in workflow run."
-
-      # 🧯 Si algo falla, al menos deja rastro automático en un Issue con el link al run
-      - name: On failure, open issue with link
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh issue create \
-            --title "Codex Agent failed (run $GITHUB_RUN_ID)" \
-            --body "Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\nRevisa los logs y actualiza AGENT_TASKS.md con instrucciones más específicas."
+        if: env.PUSHED == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const branch = process.env.BRANCH;
+            const { owner, repo } = context.repo;
+            const pr = await github.rest.pulls.create({
+              owner,
+              repo,
+              title: `Codex Agent: ${branch}`,
+              head: branch,
+              base: "main",
+              body: "Automated changes from AGENT_TASKS.md"
+            });
+            core.info(`PR created: ${pr.data.html_url}`);
