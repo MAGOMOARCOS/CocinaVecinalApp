@@ -1,4 +1,5 @@
 name: Agent (CocinaVecinal)
+
 on:
   workflow_dispatch:
     inputs:
@@ -31,10 +32,6 @@ concurrency:
 
 jobs:
   agent:
-    # Solo corre en:
-    # - workflow_dispatch
-    # - push a AGENT_TASKS.md
-    # - issue_comment que contenga /agent
     if: |
       github.actor == 'MAGOMOARCOS' &&
       (github.event_name != 'issue_comment' || contains(github.event.comment.body, '/agent'))
@@ -42,13 +39,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Node
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
 
       - name: Install deps
         run: |
@@ -81,25 +78,12 @@ jobs:
           (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') ||
           (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
         run: |
-          EXTRA=""
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            EXTRA="$(python - <<'PY'
+          EXTRA="$(python - <<'PY'
 import json, os
-p=os.environ["GITHUB_EVENT_PATH"]
-e=json.load(open(p,"r",encoding="utf-8"))
-print((e.get("inputs") or {}).get("instruction") or "")
+e=json.load(open(os.environ["GITHUB_EVENT_PATH"],"r",encoding="utf-8"))
+print((e.get("inputs") or {}).get("instruction") or (e.get("comment") or {}).get("body") or "")
 PY
 )"
-          elif [ "${GITHUB_EVENT_NAME}" = "issue_comment" ]; then
-            EXTRA="$(python - <<'PY'
-import json, os
-p=os.environ["GITHUB_EVENT_PATH"]
-e=json.load(open(p,"r",encoding="utf-8"))
-print((e.get("comment") or {}).get("body") or "")
-PY
-)"
-          fi
-
           mkdir -p .github/codex
 
           cat > .github/codex/prompt.md <<'EOF'
