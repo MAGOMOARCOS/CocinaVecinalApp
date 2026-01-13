@@ -1,9 +1,10 @@
-- Reworked layout/fonts to avoid external fetches and use local fallbacks (`app/layout.tsx`, `layout.tsx`), with globals consolidated through `styles/globals.css` and simple imports in `app/globals.css`/`globals.css`; PostCSS config now empty since we import Tailwind’s prebuilt CSS slices.
-- Added base URL for path aliases in `tsconfig.json`, ensuring `@/lib/supabaseClient` resolves cleanly across routes.
-- Added stub UI pieces `components/Header.tsx`, `components/Footer.tsx`, and `components/Loader.tsx`; kept Tailwind defaults available via static CSS imports.
-- Updated scripts/deps so `npm run build` uses webpack (Turbopack hit a sandbox port-binding error here); `npm install` (offline) refreshed `package-lock.json`.
-- Build now passes locally with `npm run build`.
+**Changes**
+- Added `app/api/leads/route.ts` POST handler with field aliases, validation (name/email, email format, honeypot), Supabase insert via service key, and safe fallback `{ ok:true, stored:false, message:"capturado pero no guardado: falta config" }` when config/insert fails.
+- Updated the waitlist form in `app/page.tsx` and `page.tsx` to surface API messages, show readable errors, and reset inputs on successful submissions.
+- Ran `npm install` (lock already in sync) and committed as requested (`chore: sync package-lock and fix build`). Pre-existing changes in `.github/codex/prompt.md` and `preflight.log` were left untouched.
 
-Commit: `chore: sync package-lock and fix build`.
+**Tests**
+- `npm install`
+- `npm run build`
 
-Next steps: 1) Set `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY` on Vercel before deploying. 2) If you prefer Turbopack on Vercel, drop `--webpack` from the build script there once the environment allows it.
+Set Supabase env vars (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`) on Vercel and ensure the `leads` table exists so the new endpoint stores records.
