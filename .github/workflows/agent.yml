@@ -1,183 +1,171 @@
-name: Codex Agent
+name: Agent (CocinaVecinal)
+
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "preflight = GRATIS (solo compila). full = Preflight GRATIS y si pasa, ejecuta Codex (CUESTA)."
+        description: "preflight = npm build; full = Codex + PR"
         required: true
-        default: "preflight"
         type: choice
-        options:
-          - "preflight"
-          - "full"
+        options: [preflight, full]
+        default: preflight
       instruction:
-        description: "Opcional. Si está vacío, usa AGENT_TASKS.md"
+        description: "Opcional: instrucción puntual (si vacío, usa AGENT_TASKS.md)"
         required: false
         type: string
 
   push:
-    branches: [main]
     paths:
-      - "AGENT_TASKS.md"
+      - AGENT_TASKS.md
 
-concurrency:
-  group: codex-agent-${{ github.ref }}
-  cancel-in-progress: true
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: write
   pull-requests: write
   issues: write
 
+concurrency:
+  group: agent-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  preflight:
-    name: preflight
+  agent:
+    # Solo corre en:
+    # - workflow_dispatch
+    # - push a AGENT_TASKS.md
+    # - issue_comment que contenga /agent
+    if: |
+      github.actor == 'MAGOMOARCOS' &&
+      (github.event_name != 'issue_comment' || contains(github.event.comment.body, '/agent'))
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
 
-      - name: Preflight (FREE): npm install/ci + build
-        shell: bash
+      - name: Install deps
         run: |
-          set -euo pipefail
           if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
+            npm ci
           else
-            npm install --no-audit --no-fund
-          fi
-          npm run build
-
-  run-agent:
-    name: run-agent
-    needs: preflight
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout (full history)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Create unique agent branch
-        shell: bash
-        run: |
-          set -euo pipefail
-          BRANCH="agent/run-${{ github.run_id }}-${{ github.run_attempt }}"
-          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
-          git checkout -b "$BRANCH"
-
-      - name: Prepare prompt
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -n "${{ inputs.instruction }}" ]; then
-            printf "%s\n" "${{ inputs.instruction }}" > .codex_prompt.md
-          else
-            cp AGENT_TASKS.md .codex_prompt.md
+            npm install
           fi
 
-          cat >> .codex_prompt.md <<'EOF'
+      - name: Preflight build
+        id: preflight
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee preflight.log
 
-Hard constraints (MUST):
-- DO NOT create/edit anything under .github/workflows/
-- Keep changes minimal.
-- Ensure `npm ci|npm install` + `npm run build` succeed on GitHub Actions.
-- Do NOT add .npmrc unless strictly required for build.
+      - name: Preflight summary
+        if: always()
+        run: |
+          echo "### Preflight: npm run build" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Resultado:** ${{ steps.preflight.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          tail -n 120 preflight.log >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prepare Codex prompt
+        if: |
+          (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') ||
+          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
+        run: |
+          EXTRA=""
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            EXTRA="$(python - <<'PY'
+import json, os
+p=os.environ["GITHUB_EVENT_PATH"]
+e=json.load(open(p,"r",encoding="utf-8"))
+print((e.get("inputs") or {}).get("instruction") or "")
+PY
+)"
+          elif [ "${GITHUB_EVENT_NAME}" = "issue_comment" ]; then
+            EXTRA="$(python - <<'PY'
+import json, os
+p=os.environ["GITHUB_EVENT_PATH"]
+e=json.load(open(p,"r",encoding="utf-8"))
+print((e.get("comment") or {}).get("body") or "")
+PY
+)"
+          fi
+
+          mkdir -p .github/codex
+
+          cat > .github/codex/prompt.md <<'EOF'
+# CocinaVecinalApp — tarea del agente
+
+Objetivo: arreglar el build y ejecutar lo que pida AGENT_TASKS.md sin romper despliegue.
+
+Reglas:
+- Trabaja SOLO dentro del repo.
+- No introduzcas secretos ni valores reales: usa variables de entorno y documenta en `.env.example`.
+- Arregla imports rotos (p.ej. `@/lib/supabaseClient`), alias y exports.
+- Mantén cambios mínimos y con TypeScript correcto.
+- Tras cambiar, ejecuta `npm run build` y deja el repo compilando.
+
+## AGENT_TASKS.md
 EOF
 
-      - name: Install Codex CLI
-        shell: bash
-        run: npm install -g @openai/codex
-
-      - name: Run Codex (apply changes)  # 💸 AQUÍ ES DONDE CUESTA
-        shell: bash
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "${OPENAI_API_KEY:-}" ]; then
-            echo "ERROR: Missing repo secret OPENAI_API_KEY"
-            exit 1
-          fi
-          codex exec --full-auto --sandbox workspace-write "$(cat .codex_prompt.md)"
-
-      - name: Block workflow edits (hard revert)
-        shell: bash
-        run: |
-          set -euo pipefail
-          git restore --staged --worktree .github/workflows 2>/dev/null || true
-          git checkout -- .github/workflows 2>/dev/null || true
-
-      - name: Build again (post-Codex)
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
+          if [ -f AGENT_TASKS.md ]; then
+            cat AGENT_TASKS.md >> .github/codex/prompt.md
           else
-            npm install --no-audit --no-fund
-          fi
-          npm run build
-
-      - name: Commit changes (if any) + push branch
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          rm -f .codex_prompt.md codex-output.md codex-output.txt || true
-
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "No changes to commit."
-            echo "PUSHED=false" >> "$GITHUB_ENV"
-            exit 0
+            echo "(AGENT_TASKS.md no encontrado en la raíz)" >> .github/codex/prompt.md
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "agent: apply AGENT_TASKS"
+          echo -e "\n\n## Log preflight (tail)\n\`\`\`" >> .github/codex/prompt.md
+          tail -n 200 preflight.log >> .github/codex/prompt.md
+          echo -e "\n\`\`\`\n" >> .github/codex/prompt.md
 
-          # rama única; si por lo que sea existe, fuerza (solo ramas del bot)
-          git push -u origin "$BRANCH" || git push -u origin "$BRANCH" --force
-          echo "PUSHED=true" >> "$GITHUB_ENV"
+          if [ -n "$EXTRA" ]; then
+            echo -e "\n\n## Instrucción extra\n$EXTRA\n" >> .github/codex/prompt.md
+          fi
 
-      - name: Open PR
-        if: ${{ env.PUSHED == 'true' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh pr create \
-            --title "Codex Agent: apply AGENT_TASKS" \
-            --body "Automated changes. Build passed in workflow." \
-            --base main \
-            --head "$BRANCH" || true
-
-      - name: On failure, open issue with run link
-        if: failure()
-        uses: actions/github-script@v7
+      - name: Run Codex
+        id: codex
+        if: |
+          (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') ||
+          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
+        uses: openai/codex-action@v1
         with:
-          script: |
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `Codex Agent failed (run ${context.runId} attempt ${context.runAttempt})`,
-              body: `Run: ${runUrl}\n\nPreflight passed, but full run failed. Check logs and update AGENT_TASKS.md with exact constraints.`
-            });
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .github/codex/prompt.md
+          output-file: codex-output.md
+          safety-strategy: drop-sudo
+          sandbox: workspace-write
+          codex-args: '["--full-auto"]'
+          allow-users: MAGOMOARCOS
+
+      - name: Build after Codex
+        if: |
+          (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') ||
+          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee post-codex-build.log
+
+      - name: Create PR with changes
+        if: |
+          (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') ||
+          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: agent/codex-${{ github.run_id }}
+          delete-branch: true
+          commit-message: "chore(agent): codex changes"
+          title: "Agent: fix build / apply AGENT_TASKS"
+          body: |
+            Cambios generados por Codex Action.
+            - Preflight: ${{ steps.preflight.outcome }}
+            - Salida Codex: ver `codex-output.md`
