@@ -23,6 +23,7 @@ concurrency:
 jobs:
   run-agent:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,42 +38,66 @@ jobs:
       - name: Create working branch
         shell: bash
         run: |
+          set -e
           BRANCH="agent/run-${GITHUB_RUN_ID}"
-          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
           git checkout -b "$BRANCH"
 
-      - name: Prepare prompt
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.instruction }}" ]; then
-            printf "%s\n" "${{ inputs.instruction }}" > .codex_prompt.md
-          else
-            cp AGENT_TASKS.md .codex_prompt.md
-          fi
-
-      - name: Run Codex (apply changes)
+      # --- CODEX ---
+      # Si lo ejecutas manualmente con "instruction", usa ese texto.
+      - name: Run Codex (from workflow input)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.instruction != '' }}
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: .codex_prompt.md
-          codex-args: '["--full-auto"]'
-          safety-strategy: drop-sudo
+          prompt: ${{ inputs.instruction }}
+          output-file: codex-output.md
           sandbox: workspace-write
+          safety-strategy: drop-sudo
+          codex-args: '["--full-auto"]'
 
+      # Si viene de push (o instruction está vacío), usa AGENT_TASKS.md
+      - name: Run Codex (from AGENT_TASKS.md)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.instruction == '' }}
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: AGENT_TASKS.md
+          output-file: codex-output.md
+          sandbox: workspace-write
+          safety-strategy: drop-sudo
+          codex-args: '["--full-auto"]'
+
+      # --- GUARDRAILS (clave para que no se rompa el push) ---
+      - name: Guardrails (never commit workflows / codex logs)
+        shell: bash
+        run: |
+          set -e
+          # 1) Nunca permitir cambios en workflows (evita el remote rejected)
+          git restore --source=HEAD -- .github/workflows || true
+
+          # 2) No versionar outputs del agente
+          rm -f codex-output.md .codex_prompt.md codex-output.json || true
+
+      # --- BUILD (evita el EUSAGE de npm ci) ---
       - name: Install deps + build (MUST pass before PR)
         shell: bash
         run: |
           set -e
-          if [ -f package-lock.json ]; then
-            npm ci || (echo "npm ci failed (lock mismatch). Regenerating lockfile with npm install..." && npm install)
-          else
-            npm install
-          fi
+
+          # npm install con retry (evita fallos transitorios tipo EAI_AGAIN)
+          for i in 1 2 3; do
+            echo "npm install attempt $i/3"
+            npm install --no-audit --no-fund && break || sleep 10
+          done
+
           npm run build
 
       - name: Commit changes (if any) + push branch
         shell: bash
         run: |
+          set -e
+
           if [ -z "$(git status --porcelain)" ]; then
             echo "No changes to commit."
             exit 0
@@ -80,15 +105,28 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add -A
+
+          # Blindaje extra: si algo tocó workflows, fuera del commit sí o sí
+          git reset -- .github/workflows || true
+
           git commit -m "agent: apply AGENT_TASKS"
           git push --set-upstream origin "$BRANCH"
 
       - name: Open PR
+        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          set -e
+
+          if [ -z "${BRANCH:-}" ]; then
+            echo "BRANCH env missing"
+            exit 1
+          fi
+
           if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
             echo "PR already exists for $BRANCH"
             exit 0
