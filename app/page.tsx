@@ -20,8 +20,8 @@ export default function Home() {
     const name = String(fd.get('name') || '').trim();
     const email = String(fd.get('email') || '').trim();
     const city = String(fd.get('city') || 'Medellín').trim() || 'Medellín';
-    const role = String(fd.get('role') || 'Ambos');
-    const wa = String(fd.get('wa') || '').trim();
+    const interest = String(fd.get('interest') || fd.get('role') || 'Ambos');
+    const whatsapp = String(fd.get('whatsapp') || fd.get('wa') || '').trim();
     const honeypot = String(fd.get('honeypot') || '').trim();
 
     // Basic client validation
@@ -42,15 +42,16 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ name, email, city, role, wa, honeypot }),
+        body: JSON.stringify({ name, email, city, interest, whatsapp, honeypot }),
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        setMessage(data.message);
+        setMessage(data.message || '¡Listo! Te avisaremos cuando lancemos en Medellín.');
+        e.currentTarget.reset();
       } else {
-        setError(data.error);
+        setError(data.error || 'No pudimos guardar tus datos. Intenta de nuevo.');
       }
     } catch (err) {
       setError('Error al enviar el formulario');
@@ -162,7 +163,7 @@ export default function Home() {
                 </div>
                 <div>
                   <label>Me interesa como</label>
-                  <select name="role" defaultValue="Ambos">
+                  <select name="interest" defaultValue="Ambos">
                     <option value="Consumidor">Consumidor (quiero pedir)</option>
                     <option value="Cocinero">Cocinero (quiero vender)</option>
                     <option value="Ambos">Ambos</option>
@@ -171,7 +172,7 @@ export default function Home() {
               </div>
 
               <label>WhatsApp (opcional)</label>
-              <input name="wa" placeholder="+57 ..." />
+              <input name="whatsapp" placeholder="+57 ..." />
 
               <input name="honeypot" type="text" style={{ display: 'none' }} />
 
