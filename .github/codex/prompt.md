@@ -56,23 +56,25 @@ https://nextjs.org/telemetry
 ▲ Next.js 16.1.1 (webpack)
 
   Creating an optimized production build ...
-✓ Compiled successfully in 4.3s
+✓ Compiled successfully in 5.3s
   Running TypeScript ...
   Collecting page data using 3 workers ...
-  Generating static pages using 3 workers (0/4) ...
-  Generating static pages using 3 workers (1/4) 
-  Generating static pages using 3 workers (2/4) 
-  Generating static pages using 3 workers (3/4) 
-✓ Generating static pages using 3 workers (4/4) in 169.0ms
+  Generating static pages using 3 workers (0/5) ...
+  Generating static pages using 3 workers (1/5) 
+  Generating static pages using 3 workers (2/5) 
+  Generating static pages using 3 workers (3/5) 
+✓ Generating static pages using 3 workers (5/5) in 204.7ms
   Finalizing page optimization ...
   Collecting build traces ...
 
 Route (app)
 ┌ ○ /
-└ ○ /_not-found
+├ ○ /_not-found
+└ ƒ /api/leads
 
 
-○  (Static)  prerendered as static content
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
 
 
 ```
@@ -81,28 +83,20 @@ Route (app)
 
 ## Instrucción extra
 /agent full
-Objetivo: arreglar el submit del formulario (ahora hace POST a /api/leads y devuelve 405).
+Ahora ya existen en Vercel (Production) estas env vars:
+- NEXT_PUBLIC_SUPABASE_URL
+- NEXT_PUBLIC_SUPABASE_ANON_KEY
+- SUPABASE_SERVICE_ROLE_KEY
 
-1) Implementar endpoint Next.js App Router:
-   - Crear app/api/leads/route.ts (si el proyecto usa src/app, entonces src/app/api/leads/route.ts).
-   - Añadir handler POST que acepte JSON del frontend: { name, email, city, role, wa, honeypot }.
-     * Soportar también alias: interest = role, whatsapp = wa.
-   - Validar:
-     * name y email obligatorios
-     * email con formato válido
-     * si honeypot viene con algo -> responder 400
-   - Persistencia:
-     * Insertar en Supabase en tabla "leads" (campos sugeridos: created_at, name, email, city, interest/role, whatsapp).
-     * Si faltan env vars de Supabase o falla el insert, hacer fallback: log en consola y devolver 200 con { ok:true, stored:false, message:"capturado pero no guardado: falta config" } para no romper la captación.
-
-2) Respuesta API:
-   - En success real: 200 { ok:true, stored:true, message:"Gracias, estás en la lista" }
-   - En validación: 400 { ok:false, message:"..." }
-   - En error inesperado: 500 { ok:false, message:"..." }
-
-3) UI:
-   - En el submit, si ok:true mostrar mensaje de éxito y limpiar inputs.
-   - Si ok:false mostrar error legible.
-
-4) Asegurar que npm run build pasa y abrir PR.
+Problema actual en producción: al enviar el formulario puede mostrar “Gracias, estás en la lista” pero también “Error al enviar el formulario”.
+Tarea:
+1) Reproducir en producción y revisar Network/Response de POST /api/leads.
+2) Corregir el frontend para que:
+   - NO muestre error cuando la respuesta sea ok (según JSON { ok: true }).
+   - Use data.ok (no solo response.ok) y maneje correctamente errores 4xx/5xx.
+   - Limpie el estado de error en éxito y no dispare doble submit.
+3) Revisar /app/api/leads/route.ts para que siempre responda JSON consistente:
+   { ok: boolean, message?: string, error?: string, stored?: boolean }
+   y use códigos HTTP adecuados (200 éxito, 400 validación, 500 servidor).
+4) Abrir PR con el fix y dejar nota en README de env vars requeridas.
 
