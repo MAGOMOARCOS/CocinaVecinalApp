@@ -7,7 +7,9 @@ on:
         description: "preflight = npm build; full = Codex + PR"
         required: true
         type: choice
-        options: [preflight, full]
+        options:
+          - preflight
+          - full
         default: preflight
       instruction:
         description: "Opcional: instrucción puntual (si vacío, usa AGENT_TASKS.md)"
@@ -32,6 +34,7 @@ concurrency:
 
 jobs:
   agent:
+    # Ejecuta solo si lo lanza Manuel, y si es issue_comment debe contener "/agent"
     if: |
       github.actor == 'MAGOMOARCOS' &&
       (github.event_name != 'issue_comment' || contains(github.event.comment.body, '/agent'))
@@ -48,7 +51,9 @@ jobs:
           cache: "npm"
 
       - name: Install deps
+        shell: bash
         run: |
+          set -euo pipefail
           if [ -f package-lock.json ]; then
             npm ci
           else
@@ -57,6 +62,7 @@ jobs:
 
       - name: Preflight build
         id: preflight
+        shell: bash
         continue-on-error: true
         run: |
           set -o pipefail
@@ -64,7 +70,9 @@ jobs:
 
       - name: Preflight summary
         if: always()
+        shell: bash
         run: |
+          set -euo pipefail
           echo "### Preflight: npm run build" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Resultado:** ${{ steps.preflight.outcome }}" >> "$GITHUB_STEP_SUMMARY"
@@ -73,17 +81,28 @@ jobs:
           tail -n 120 preflight.log >> "$GITHUB_STEP_SUMMARY"
           echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
 
+      # Solo prepara prompt si se pide FULL (workflow_dispatch mode=full o comment "/agent full")
       - name: Prepare Codex prompt
         if: |
-          (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') ||
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full') ||
           (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
+        shell: bash
         run: |
+          set -euo pipefail
+
           EXTRA="$(python - <<'PY'
 import json, os
-e=json.load(open(os.environ["GITHUB_EVENT_PATH"],"r",encoding="utf-8"))
-print((e.get("inputs") or {}).get("instruction") or (e.get("comment") or {}).get("body") or "")
+e = json.load(open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8"))
+instruction = ""
+if isinstance(e.get("inputs"), dict):
+  instruction = (e["inputs"].get("instruction") or "").strip()
+comment = ""
+if isinstance(e.get("comment"), dict):
+  comment = (e["comment"].get("body") or "").strip()
+print(instruction or comment)
 PY
 )"
+
           mkdir -p .github/codex
 
           cat > .github/codex/prompt.md <<'EOF'
@@ -118,7 +137,7 @@ EOF
       - name: Run Codex
         id: codex
         if: |
-          (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') ||
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full') ||
           (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
         uses: openai/codex-action@v1
         with:
@@ -132,8 +151,9 @@ EOF
 
       - name: Build after Codex
         if: |
-          (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') ||
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full') ||
           (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
+        shell: bash
         continue-on-error: true
         run: |
           set -o pipefail
@@ -141,7 +161,7 @@ EOF
 
       - name: Create PR with changes
         if: |
-          (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') ||
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full') ||
           (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
         uses: peter-evans/create-pull-request@v8
         with:
