@@ -34,7 +34,6 @@ concurrency:
 
 jobs:
   agent:
-    # Ejecuta solo si lo lanza Manuel, y si es issue_comment debe contener "/agent"
     if: |
       github.actor == 'MAGOMOARCOS' &&
       (github.event_name != 'issue_comment' || contains(github.event.comment.body, '/agent'))
@@ -81,7 +80,6 @@ jobs:
           tail -n 120 preflight.log >> "$GITHUB_STEP_SUMMARY"
           echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
 
-      # Solo prepara prompt si se pide FULL (workflow_dispatch mode=full o comment "/agent full")
       - name: Prepare Codex prompt
         if: |
           (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full') ||
@@ -90,35 +88,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          EXTRA="$(python - <<'PY'
-import json, os
-e = json.load(open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8"))
-instruction = ""
-if isinstance(e.get("inputs"), dict):
-  instruction = (e["inputs"].get("instruction") or "").strip()
-comment = ""
-if isinstance(e.get("comment"), dict):
-  comment = (e["comment"].get("body") or "").strip()
-print(instruction or comment)
-PY
-)"
+          EXTRA="$(python -c 'import json,os; e=json.load(open(os.environ["GITHUB_EVENT_PATH"],"r",encoding="utf-8")); print(((e.get("inputs") or {}).get("instruction") or (e.get("comment") or {}).get("body") or "").strip())')"
 
           mkdir -p .github/codex
 
           cat > .github/codex/prompt.md <<'EOF'
-# CocinaVecinalApp — tarea del agente
+          # CocinaVecinalApp — tarea del agente
 
-Objetivo: arreglar el build y ejecutar lo que pida AGENT_TASKS.md sin romper despliegue.
+          Objetivo: arreglar el build y ejecutar lo que pida AGENT_TASKS.md sin romper despliegue.
 
-Reglas:
-- Trabaja SOLO dentro del repo.
-- No introduzcas secretos ni valores reales: usa variables de entorno y documenta en `.env.example`.
-- Arregla imports rotos (p.ej. `@/lib/supabaseClient`), alias y exports.
-- Mantén cambios mínimos y con TypeScript correcto.
-- Tras cambiar, ejecuta `npm run build` y deja el repo compilando.
+          Reglas:
+          - Trabaja SOLO dentro del repo.
+          - No introduzcas secretos ni valores reales: usa variables de entorno y documenta en `.env.example`.
+          - Arregla imports rotos (p.ej. `@/lib/supabaseClient`), alias y exports.
+          - Mantén cambios mínimos y con TypeScript correcto.
+          - Tras cambiar, ejecuta `npm run build` y deja el repo compilando.
 
-## AGENT_TASKS.md
-EOF
+          ## AGENT_TASKS.md
+          EOF
 
           if [ -f AGENT_TASKS.md ]; then
             cat AGENT_TASKS.md >> .github/codex/prompt.md
