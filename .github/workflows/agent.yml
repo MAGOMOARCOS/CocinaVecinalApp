@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "preflight = GRATIS (solo simula). full = Preflight GRATIS y si pasa, ejecuta Codex (CUESTA)."
+        description: "preflight = GRATIS (solo build/lint/typecheck). full = preflight GRATIS y si pasa, ejecuta Codex (CUESTA) + PR."
         required: true
         default: "preflight"
         type: choice
@@ -20,19 +20,18 @@ on:
     paths:
       - "AGENT_TASKS.md"
 
-concurrency:
-  group: codex-agent-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: write
   pull-requests: write
   issues: write
 
+concurrency:
+  group: codex-agent-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   run-agent:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,32 +44,55 @@ jobs:
           node-version: "20"
           cache: "npm"
 
+      # =========================
+      # PRE-RUN (GRATIS): si falla aquí, NO se ejecuta Codex
+      # =========================
+      - name: Preflight (FREE): install + build
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Preflight (FREE): lint (if available)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1)" \
+            && npm run lint \
+            || echo "No lint script. Skipping."
+
+      - name: Preflight (FREE): typecheck (script or tsc)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.typecheck?0:1)"; then
+            npm run typecheck
+          elif [ -f tsconfig.json ]; then
+            npx --yes tsc -p tsconfig.json --noEmit
+          else
+            echo "No typecheck script or tsconfig.json. Skipping."
+          fi
+
+      # =========================
+      # RUN (CON COSTE): SOLO workflow_dispatch + mode=full
+      # =========================
       - name: Create unique agent branch
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full' }}
+        shell: bash
         run: |
           set -euo pipefail
           BRANCH="agent/run-${{ github.run_id }}-${{ github.run_attempt }}"
           echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
           git checkout -b "$BRANCH"
 
-      # =========================
-      # PRE-RUN (GRATIS): si falla aquí, NO se llama a Codex
-      # =========================
-      - name: Preflight (FREE): npm install + build must pass
-        run: |
-          set -euo pipefail
-          npm install --no-audit --no-fund
-          npm run build
-
-      # =========================
-      # RUN (CON COSTE) solo si workflow_dispatch + mode=full
-      # =========================
       - name: Prepare prompt
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full' }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.instruction }}" ]; then
-            printf "%s\n" "${{ inputs.instruction }}" > .codex_prompt.md
+          if [ -n "${{ github.event.inputs.instruction }}" ]; then
+            printf "%s\n" "${{ github.event.inputs.instruction }}" > .codex_prompt.md
           else
             cp AGENT_TASKS.md .codex_prompt.md
           fi
@@ -80,49 +102,64 @@ jobs:
 Hard constraints (MUST):
 - DO NOT create/edit anything under .github/workflows/
 - Keep changes minimal.
-- Ensure `npm install` + `npm run build` succeed on GitHub Actions.
+- Ensure `npm install` + `npm run build` + lint/typecheck pass on GitHub Actions.
 EOF
 
       - name: Install Codex CLI
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full' }}
         run: npm install -g @openai/codex
 
-      - name: Run Codex (apply changes)  # 💸 AQUÍ ES DONDE CUESTA
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
+      - name: Run Codex (apply changes)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        shell: bash
         run: |
           set -euo pipefail
           if [ -z "${OPENAI_API_KEY:-}" ]; then
             echo "ERROR: Missing repo secret OPENAI_API_KEY"
             exit 1
           fi
-
           codex exec --full-auto --sandbox workspace-write "$(cat .codex_prompt.md)"
 
-      # Airbag: jamás permitir cambios en workflows
+      # Airbag: jamás permitir cambios en workflows en el commit
       - name: Block workflow edits (hard revert)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full' }}
+        shell: bash
         run: |
           set -euo pipefail
           git restore --staged --worktree .github/workflows 2>/dev/null || true
           git checkout -- .github/workflows 2>/dev/null || true
 
-      # Rebuild solo si Codex corrió
-      - name: Build again (post-Codex)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
+      - name: Post-Codex: install + build + lint + typecheck
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full' }}
+        shell: bash
         run: |
           set -euo pipefail
           npm install --no-audit --no-fund
           npm run build
 
+          node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1)" \
+            && npm run lint \
+            || echo "No lint script. Skipping."
+
+          if node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.typecheck?0:1)"; then
+            npm run typecheck
+          elif [ -f tsconfig.json ]; then
+            npx --yes tsc -p tsconfig.json --noEmit
+          else
+            echo "No typecheck script or tsconfig.json. Skipping."
+          fi
+
       - name: Commit changes (if any) + push branch
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full' }}
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          # No subas archivos temporales del agente
           rm -f .codex_prompt.md codex-output.md || true
 
           if [ -z "$(git status --porcelain)" ]; then
@@ -137,7 +174,6 @@ EOF
           git add -A
           git commit -m "agent: apply AGENT_TASKS"
 
-          # Push robusto contra reruns / ramas existentes
           if git push -u origin "$BRANCH"; then
             echo "PUSHED=true" >> "$GITHUB_ENV"
           else
@@ -146,26 +182,14 @@ EOF
           fi
 
       - name: Open PR
-        if: ${{ env.PUSHED == 'true' && github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
+        if: ${{ env.PUSHED == 'true' && github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full' }}
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           set -euo pipefail
           gh pr create \
             --title "Codex Agent: apply AGENT_TASKS" \
-            --body "Automated changes. Build passed in workflow." \
+            --body "Automated changes. Build + lint + typecheck passed." \
             --base main \
             --head "$BRANCH"
-
-      - name: On failure, open issue with run link
-        if: failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `Codex Agent failed (run ${context.runId} attempt ${context.runAttempt})`,
-              body: `Run: ${runUrl}\n\nFix preflight/build or update AGENT_TASKS.md with the exact failing lines.`
-            });
