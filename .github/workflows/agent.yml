@@ -63,22 +63,11 @@ jobs:
         shell: bash
         run: |
           set -e
-
-          # Si hay lockfile, intentamos npm ci (reproducible).
-          # Si falla por des-sync, regeneramos lock con npm install.
           if [ -f package-lock.json ]; then
-            echo "Detected package-lock.json -> trying npm ci"
-            if npm ci; then
-              echo "npm ci OK"
-            else
-              echo "npm ci failed (lock out of sync). Regenerating lock with npm install..."
-              npm install
-            fi
+            npm ci || (echo "npm ci failed (lock mismatch). Regenerating lockfile with npm install..." && npm install)
           else
-            echo "No lockfile -> npm install"
             npm install
           fi
-
           npm run build
 
       - name: Commit changes (if any) + push branch
@@ -86,7 +75,6 @@ jobs:
         run: |
           if [ -z "$(git status --porcelain)" ]; then
             echo "No changes to commit."
-            echo "CHANGED=false" >> $GITHUB_ENV
             exit 0
           fi
 
@@ -95,10 +83,8 @@ jobs:
           git add -A
           git commit -m "agent: apply AGENT_TASKS"
           git push --set-upstream origin "$BRANCH"
-          echo "CHANGED=true" >> $GITHUB_ENV
 
       - name: Open PR
-        if: env.CHANGED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
