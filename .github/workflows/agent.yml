@@ -1,5 +1,4 @@
 name: Codex Agent
-
 on:
   workflow_dispatch:
     inputs:
