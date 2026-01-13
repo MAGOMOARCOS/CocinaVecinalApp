@@ -45,12 +45,16 @@ export default function Home() {
         body: JSON.stringify({ name, email, city, role, wa, honeypot }),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => null);
+      const apiMessage =
+        (data as { message?: string })?.message ||
+        'No pudimos procesar tu solicitud';
 
-      if (response.ok) {
-        setMessage(data.message);
+      if ((data as { ok?: boolean })?.ok) {
+        setMessage(apiMessage);
+        e.currentTarget.reset();
       } else {
-        setError(data.error);
+        setError(apiMessage);
       }
     } catch (err) {
       setError('Error al enviar el formulario');
