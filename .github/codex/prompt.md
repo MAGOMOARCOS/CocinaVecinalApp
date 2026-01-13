@@ -56,23 +56,25 @@ https://nextjs.org/telemetry
 ▲ Next.js 16.1.1 (webpack)
 
   Creating an optimized production build ...
-✓ Compiled successfully in 4.3s
+✓ Compiled successfully in 5.0s
   Running TypeScript ...
   Collecting page data using 3 workers ...
-  Generating static pages using 3 workers (0/4) ...
-  Generating static pages using 3 workers (1/4) 
-  Generating static pages using 3 workers (2/4) 
-  Generating static pages using 3 workers (3/4) 
-✓ Generating static pages using 3 workers (4/4) in 169.0ms
+  Generating static pages using 3 workers (0/5) ...
+  Generating static pages using 3 workers (1/5) 
+  Generating static pages using 3 workers (2/5) 
+  Generating static pages using 3 workers (3/5) 
+✓ Generating static pages using 3 workers (5/5) in 212.9ms
   Finalizing page optimization ...
   Collecting build traces ...
 
 Route (app)
 ┌ ○ /
-└ ○ /_not-found
+├ ○ /_not-found
+└ ƒ /api/leads
 
 
-○  (Static)  prerendered as static content
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
 
 
 ```
@@ -81,28 +83,11 @@ Route (app)
 
 ## Instrucción extra
 /agent full
-Objetivo: arreglar el submit del formulario (ahora hace POST a /api/leads y devuelve 405).
-
-1) Implementar endpoint Next.js App Router:
-   - Crear app/api/leads/route.ts (si el proyecto usa src/app, entonces src/app/api/leads/route.ts).
-   - Añadir handler POST que acepte JSON del frontend: { name, email, city, role, wa, honeypot }.
-     * Soportar también alias: interest = role, whatsapp = wa.
-   - Validar:
-     * name y email obligatorios
-     * email con formato válido
-     * si honeypot viene con algo -> responder 400
-   - Persistencia:
-     * Insertar en Supabase en tabla "leads" (campos sugeridos: created_at, name, email, city, interest/role, whatsapp).
-     * Si faltan env vars de Supabase o falla el insert, hacer fallback: log en consola y devolver 200 con { ok:true, stored:false, message:"capturado pero no guardado: falta config" } para no romper la captación.
-
-2) Respuesta API:
-   - En success real: 200 { ok:true, stored:true, message:"Gracias, estás en la lista" }
-   - En validación: 400 { ok:false, message:"..." }
-   - En error inesperado: 500 { ok:false, message:"..." }
-
-3) UI:
-   - En el submit, si ok:true mostrar mensaje de éxito y limpiar inputs.
-   - Si ok:false mostrar error legible.
-
-4) Asegurar que npm run build pasa y abrir PR.
+Arregla el formulario de leads: ahora puede mostrar a la vez éxito y error.
+En app/page.tsx (handleSubmit):
+- Añade setError(null) al inicio del submit (antes del fetch).
+- Si response.ok y data.ok === true: setError(null), setMessage("Gracias, estás en la lista") y NO muestres el bloque rojo.
+- Si hay error: setMessage(null) y setError(mensaje).
+Haz que success y error sean mutuamente excluyentes.
+Ejecuta npm run build y abre PR.
 

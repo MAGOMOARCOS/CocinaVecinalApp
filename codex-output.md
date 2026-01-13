@@ -1,10 +1,8 @@
-**Changes**
-- Added `app/api/leads/route.ts` POST handler with field aliases, validation (name/email, email format, honeypot), Supabase insert via service key, and safe fallback `{ ok:true, stored:false, message:"capturado pero no guardado: falta config" }` when config/insert fails.
-- Updated the waitlist form in `app/page.tsx` and `page.tsx` to surface API messages, show readable errors, and reset inputs on successful submissions.
-- Ran `npm install` (lock already in sync) and committed as requested (`chore: sync package-lock and fix build`). Pre-existing changes in `.github/codex/prompt.md` and `preflight.log` were left untouched.
+- Updated `app/page.tsx` lead form submission so success/error states are mutually exclusive: clear error up front, clear it again on success, set the fixed success message, and nullify success on error.
+- Ran `npm install` (lock already in sync) and committed fix as `chore: sync package-lock and fix build`.
 
 **Tests**
-- `npm install`
 - `npm run build`
 
-Set Supabase env vars (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`) on Vercel and ensure the `leads` table exists so the new endpoint stores records.
+**Notes**
+- Remaining local changes not part of the commit: `.github/codex/prompt.md`, `preflight.log`.
