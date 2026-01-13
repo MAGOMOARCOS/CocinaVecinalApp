@@ -1,10 +1,13 @@
-**Changes**
-- Added `app/api/leads/route.ts` POST handler with field aliases, validation (name/email, email format, honeypot), Supabase insert via service key, and safe fallback `{ ok:true, stored:false, message:"capturado pero no guardado: falta config" }` when config/insert fails.
-- Updated the waitlist form in `app/page.tsx` and `page.tsx` to surface API messages, show readable errors, and reset inputs on successful submissions.
-- Ran `npm install` (lock already in sync) and committed as requested (`chore: sync package-lock and fix build`). Pre-existing changes in `.github/codex/prompt.md` and `preflight.log` were left untouched.
+Adjusted lead form flow and API responses, vendored autoprefixer for offline installs, and synced deps so the build succeeds.
 
-**Tests**
-- `npm install`
+- `app/page.tsx`: use `data.ok` to decide success, clear errors on success, surface API errors properly, guard/delay double submissions with `isSubmitting`, and disable the submit button with a loading label.
+- `app/api/leads/route.ts`: consistent JSON shape `{ ok, message?, error?, stored? }` with 400 for validation errors and 500 for server issues; missing Supabase config now returns an explicit 500/error.
+- `postcss.config.mjs`, `vendor/autoprefixer/*`: added a vendored no-op autoprefixer for offline installs and load it conditionally; `package.json`/`package-lock.json` updated via `npm install` to keep lockstep.
+- `README.md`: documented required Supabase env vars for Vercel/local and noted the vendored autoprefixer.
+
+Tests:
 - `npm run build`
 
-Set Supabase env vars (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`) on Vercel and ensure the `leads` table exists so the new endpoint stores records.
+Next steps:
+1) If you want real vendor prefixing, swap the vendored `autoprefixer` for the registry package (`package.json` back to a version spec and reinstall with network). 
+2) Confirm Vercel auto-deploy is pointed at this branch with the env vars set (NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY).
