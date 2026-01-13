@@ -45,7 +45,7 @@ Haz commits en esta rama hasta dejar `npm run build` en verde. Cambios mínimos.
 ```
 
 > nextjs@0.1.0 build
-> next build
+> next build --webpack
 
 ⚠ No build cache found. Please configure build caching for faster rebuilds. Read more: https://nextjs.org/docs/messages/no-cache
 Attention: Next.js now collects completely anonymous telemetry regarding usage.
@@ -53,28 +53,19 @@ This information is used to shape Next.js' roadmap and prioritize features.
 You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
 https://nextjs.org/telemetry
 
-▲ Next.js 16.1.1 (Turbopack)
+▲ Next.js 16.1.1 (webpack)
 
   Creating an optimized production build ...
-✓ Compiled successfully in 3.0s
+✓ Compiled successfully in 4.4s
   Running TypeScript ...
-
-  We detected TypeScript in your project and reconfigured your tsconfig.json file for you.
-  The following suggested values were added to your tsconfig.json. These values can be changed to fit your project's needs:
-
-  	- include was updated to add '.next/dev/types/**/*.ts'
-
-  The following mandatory changes were made to your tsconfig.json:
-
-  	- jsx was set to react-jsx (next.js uses the React automatic runtime)
-
   Collecting page data using 3 workers ...
   Generating static pages using 3 workers (0/4) ...
   Generating static pages using 3 workers (1/4) 
   Generating static pages using 3 workers (2/4) 
   Generating static pages using 3 workers (3/4) 
-✓ Generating static pages using 3 workers (4/4) in 122.0ms
+✓ Generating static pages using 3 workers (4/4) in 228.1ms
   Finalizing page optimization ...
+  Collecting build traces ...
 
 Route (app)
 ┌ ○ /
@@ -85,4 +76,10 @@ Route (app)
 
 
 ```
+
+
+
+## Instrucción extra
+/agent full
+Fix lead form submit: the frontend posts to /api/leads but it returns 405. Implement POST handler for /api/leads (Next.js route) to accept JSON {name,email,city,interest,whatsapp?}, validate, store in Supabase (or fallback to in-memory/console if env missing), return 200 JSON on success and 4xx/5xx with message. Update UI to show success message. Ensure npm run build passes and open PR.
 
