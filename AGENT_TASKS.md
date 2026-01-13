@@ -1,3 +1,9 @@
+## TAREA PRIORITARIA (BUILD ESTABLE)
+1) Ejecuta `npm install` para regenerar/actualizar `package-lock.json` y dejarlo 100% sincronizado con `package.json`.
+2) Asegura que `npm run build` pasa en limpio.
+3) NO modifiques nada dentro de `.github/workflows/` (ni lo crees, ni lo edites).
+4) Commit separado: "chore: sync package-lock and fix build"
+
 @codex Arregla el build que falla en Vercel (module not found tipo "@/lib/supabaseClient").
 Haz commits en esta rama hasta dejar `npm run build` en verde. Cambios mínimos.
 
