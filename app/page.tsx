@@ -18,6 +18,7 @@ export default function Home() {
 
     setMessage(null);
     setError(null);
+    setMessage(null);
 
     const fd = new FormData(e.currentTarget);
     const name = String(fd.get('name') || '').trim();
@@ -57,6 +58,10 @@ export default function Home() {
       const success = data?.ok === true;
       const successMessage = data?.message || 'Gracias, estás en la lista';
 
+      if (response.ok && (data as { ok?: boolean })?.ok) {
+        setError(null);
+        setMessage('Gracias, estás en la lista');
+
       if (success) {
         setMessage(successMessage);
         setError(null);
@@ -64,6 +69,9 @@ export default function Home() {
         return;
       }
 
+ agent/codex-20973540860
+      setMessage(null);
+      setError(apiMessage);
       const apiError =
         data?.error ||
         data?.message ||
@@ -73,6 +81,7 @@ export default function Home() {
       setMessage(null);
       setError(apiError);
     } catch (err) {
+      setMessage(null);
       setError('Error al enviar el formulario');
     } finally {
       setIsSubmitting(false);

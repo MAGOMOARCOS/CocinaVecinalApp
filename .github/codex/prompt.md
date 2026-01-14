@@ -56,6 +56,7 @@ https://nextjs.org/telemetry
 ▲ Next.js 16.1.1 (webpack)
 
   Creating an optimized production build ...
+✓ Compiled successfully in 5.0s
 ✓ Compiled successfully in 5.3s
   Running TypeScript ...
   Collecting page data using 3 workers ...
@@ -63,6 +64,7 @@ https://nextjs.org/telemetry
   Generating static pages using 3 workers (1/5) 
   Generating static pages using 3 workers (2/5) 
   Generating static pages using 3 workers (3/5) 
+✓ Generating static pages using 3 workers (5/5) in 212.9ms
 ✓ Generating static pages using 3 workers (5/5) in 204.7ms
   Finalizing page optimization ...
   Collecting build traces ...
@@ -83,6 +85,13 @@ Route (app)
 
 ## Instrucción extra
 /agent full
+Arregla el formulario de leads: ahora puede mostrar a la vez éxito y error.
+En app/page.tsx (handleSubmit):
+- Añade setError(null) al inicio del submit (antes del fetch).
+- Si response.ok y data.ok === true: setError(null), setMessage("Gracias, estás en la lista") y NO muestres el bloque rojo.
+- Si hay error: setMessage(null) y setError(mensaje).
+Haz que success y error sean mutuamente excluyentes.
+Ejecuta npm run build y abre PR.
 Ahora ya existen en Vercel (Production) estas env vars:
 - NEXT_PUBLIC_SUPABASE_URL
 - NEXT_PUBLIC_SUPABASE_ANON_KEY
