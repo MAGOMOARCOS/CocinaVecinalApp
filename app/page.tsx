@@ -1,6 +1,8 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
+
+type LeadResponse = { ok?: boolean; message?: string; error?: string };
 
 export default function Home() {
   const formRef = useRef<HTMLDivElement | null>(null);
@@ -12,7 +14,7 @@ export default function Home() {
     formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (isSubmitting) return;
 
@@ -20,14 +22,18 @@ export default function Home() {
     setError(null);
 
     const fd = new FormData(e.currentTarget);
+
     const name = String(fd.get('name') || '').trim();
     const email = String(fd.get('email') || '').trim();
-    const city = String(fd.get('city') || 'Medellín').trim() || 'Medellín';
-    const role = String(fd.get('role') || 'Ambos').trim() || 'Ambos';
+    const city = (String(fd.get('city') || '').trim() || 'Medellín').trim();
+    const role = String(fd.get('role') || 'Ambos');
     const wa = String(fd.get('wa') || '').trim();
     const honeypot = String(fd.get('honeypot') || '').trim();
 
-    // Basic client validation
+    // Anti-bot simple
+    if (honeypot) return;
+
+    // Validación mínima
     if (!name || !email) {
       setError('Nombre y email son requeridos');
       return;
@@ -48,26 +54,27 @@ export default function Home() {
         body: JSON.stringify({ name, email, city, role, wa, honeypot }),
       });
 
-      const data: { ok?: boolean; message?: string; error?: string } | null =
-        await response.json().catch(() => null);
+      const data: LeadResponse | null = await response
+        .json()
+        .catch(() => null);
 
-      const success = response.ok && data?.ok === true;
+      const ok = Boolean(response.ok && data?.ok);
 
       const apiMessage =
         data?.message ||
         data?.error ||
         (!response.ok && response.statusText) ||
-        (success ? 'Gracias, estás en la lista' : 'No pudimos procesar tu solicitud');
+        'No pudimos procesar tu solicitud';
 
-      if (success) {
+      if (ok) {
         setError(null);
         setMessage(apiMessage || 'Gracias, estás en la lista');
         e.currentTarget.reset();
       } else {
         setMessage(null);
-        setError(apiMessage || 'Error al enviar el formulario');
+        setError(apiMessage);
       }
-    } catch (err) {
+    } catch {
       setMessage(null);
       setError('Error al enviar el formulario');
     } finally {
@@ -150,7 +157,7 @@ export default function Home() {
             </div>
 
             <footer>
-              <b>Nota:</b> esto es una página temporal para captación y validación. La app se lanza en ~90 días.
+              <b>Nota:</b> esto es una página temporal para captación y validación.
               <div className="links">
                 <a href="mailto:info@cocinavecinal.com">info@cocinavecinal.com</a>
               </div>
@@ -202,9 +209,7 @@ export default function Home() {
               {message && <div className="ok">{message}</div>}
               {error && <div style={{ color: 'red', marginTop: 10 }}>{error}</div>}
 
-              <div className="small">
-                Tus datos se guardarán de forma segura.
-              </div>
+              <div className="small">Tus datos se guardarán de forma segura.</div>
             </form>
           </div>
         </div>
