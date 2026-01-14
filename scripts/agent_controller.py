@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import json
 import os
 from dataclasses import dataclass
@@ -9,15 +9,31 @@ import urllib.error
 
 GITHUB_API = "https://api.github.com"
 
+
 def _clean_secret(s: Optional[str], name: str) -> str:
     s = (s or "").replace("\r", "").replace("\n", "").strip()
     if not s:
         raise RuntimeError(f"{name} is missing/empty")
     return s
 
-def _req(method: str, url: str, token: str, data: Optional[Dict]=None,
-         accept: str="application/vnd.github+json") -> Any:
-    token = _clean_secret(token, "GH_PAT")
+
+def _get_github_token() -> str:
+    """
+    Prefer the built-in GitHub Actions token (GITHUB_TOKEN).
+    Fallback to GH_PAT if provided.
+    """
+    tok = (os.environ.get("GITHUB_TOKEN") or "").strip()
+    if tok:
+        return tok
+    tok = (os.environ.get("GH_PAT") or "").strip()
+    if tok:
+        return tok
+    raise RuntimeError("Missing token: set GITHUB_TOKEN (recommended) or GH_PAT")
+
+
+def _req(method: str, url: str, token: str, data: Optional[Dict] = None,
+         accept: str = "application/vnd.github+json") -> Any:
+    token = _clean_secret(token, "GITHUB_TOKEN/GH_PAT")
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": accept,
@@ -28,12 +44,24 @@ def _req(method: str, url: str, token: str, data: Optional[Dict]=None,
     if data is not None:
         body = json.dumps(data).encode("utf-8")
         headers["Content-Type"] = "application/json"
+
     req = urllib.request.Request(url, method=method, headers=headers, data=body)
-    with urllib.request.urlopen(req) as resp:
-        raw = resp.read()
-        if not raw:
-            return None
-        return json.loads(raw.decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req) as resp:
+            raw = resp.read()
+            if not raw:
+                return None
+            return json.loads(raw.decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Make GH auth errors obvious
+        msg = e.read().decode("utf-8", errors="ignore")
+        if e.code in (401, 403):
+            raise RuntimeError(
+                f"GitHub API auth failed ({e.code}). "
+                f"Check workflow permissions and token. Details: {msg[:400]}"
+            ) from e
+        raise
+
 
 def _openai_responses(model: str, api_key: str, input_text: str) -> str:
     api_key = _clean_secret(api_key, "OPENAI_API_KEY")
@@ -69,73 +97,89 @@ def _openai_responses(model: str, api_key: str, input_text: str) -> str:
             return call("gpt-4o-mini").strip()
         raise
 
+
 @dataclass
 class Ctx:
     owner: str
     repo: str
     issue_number: int
-    gh_pat: str
+    gh_token: str
     openai_key: str
     openai_model: str
     agent_workflow_file: str
     min_interval_minutes: int
     max_comments: int
 
-def parse_repo() -> Tuple[str,str]:
-    repo = os.environ.get("GITHUB_REPOSITORY","")
+
+def parse_repo() -> Tuple[str, str]:
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
     if "/" not in repo:
         raise RuntimeError("GITHUB_REPOSITORY missing")
-    return tuple(repo.split("/",1))
+    return tuple(repo.split("/", 1))
+
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
+
 def get_issue(ctx: Ctx) -> Dict:
-    return _req("GET", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/issues/{ctx.issue_number}", ctx.gh_pat)
+    return _req("GET", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/issues/{ctx.issue_number}", ctx.gh_token)
+
 
 def list_issue_comments(ctx: Ctx) -> List[Dict]:
-    return _req("GET", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/issues/{ctx.issue_number}/comments?per_page=100", ctx.gh_pat)
+    return _req("GET", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/issues/{ctx.issue_number}/comments?per_page=100", ctx.gh_token)
+
 
 def post_issue_comment(ctx: Ctx, body: str) -> None:
-    _req("POST", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/issues/{ctx.issue_number}/comments", ctx.gh_pat, {"body": body})
+    _req("POST", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/issues/{ctx.issue_number}/comments", ctx.gh_token, {"body": body})
 
-def list_workflow_runs(ctx: Ctx, workflow_file: str, per_page: int=20) -> List[Dict]:
-    r = _req("GET", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/actions/workflows/{workflow_file}/runs?per_page={per_page}", ctx.gh_pat)
+
+def list_workflow_runs(ctx: Ctx, workflow_file: str, per_page: int = 20) -> List[Dict]:
+    r = _req("GET", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/actions/workflows/{workflow_file}/runs?per_page={per_page}", ctx.gh_token)
     return r.get("workflow_runs", [])
 
+
 def dispatch_workflow(ctx: Ctx, workflow_file: str) -> None:
-    _req("POST", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/actions/workflows/{workflow_file}/dispatches", ctx.gh_pat, {
-        "ref": "main"
-    })
+    _req(
+        "POST",
+        f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/actions/workflows/{workflow_file}/dispatches",
+        ctx.gh_token,
+        {"ref": "main"},
+    )
+
 
 def last_agent_activity(ctx: Ctx):
     runs = list_workflow_runs(ctx, ctx.agent_workflow_file, per_page=30)
     if not runs:
         return None, None
-    runs.sort(key=lambda x: x.get("created_at",""), reverse=True)
+    runs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     r0 = runs[0]
     t = r0.get("created_at")
-    dt = datetime.fromisoformat(t.replace("Z","+00:00")) if t else None
+    dt = datetime.fromisoformat(t.replace("Z", "+00:00")) if t else None
     return r0, dt
+
 
 def agent_in_progress(ctx: Ctx) -> bool:
     runs = list_workflow_runs(ctx, ctx.agent_workflow_file, per_page=10)
-    return any(r.get("status") in ("in_progress","queued") for r in runs)
+    return any(r.get("status") in ("in_progress", "queued") for r in runs)
+
 
 def list_pulls(ctx: Ctx) -> List[Dict]:
-    return _req("GET", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/pulls?state=open&per_page=50", ctx.gh_pat)
+    return _req("GET", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/pulls?state=open&per_page=50", ctx.gh_token)
+
 
 def get_pull_files(ctx: Ctx, pr_number: int) -> List[Dict]:
-    return _req("GET", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/pulls/{pr_number}/files?per_page=100", ctx.gh_pat)
+    return _req("GET", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/pulls/{pr_number}/files?per_page=100", ctx.gh_token)
 
-def summarize_pr_diff(files: List[Dict], max_files: int=25) -> str:
+
+def summarize_pr_diff(files: List[Dict], max_files: int = 25) -> str:
     lines = []
     for f in files[:max_files]:
         fn = f.get("filename")
         status = f.get("status")
         adds = f.get("additions")
         dels = f.get("deletions")
-        patch = f.get("patch","") or ""
+        patch = f.get("patch", "") or ""
         patch_snip = "\n".join(patch.splitlines()[:60]) if patch else ""
         lines.append(f"- {fn} [{status}] (+{adds}/-{dels})")
         if patch_snip:
@@ -146,14 +190,15 @@ def summarize_pr_diff(files: List[Dict], max_files: int=25) -> str:
         lines.append(f"...({len(files)-max_files} files more)")
     return "\n".join(lines).strip()
 
+
 def build_input(issue: Dict, comments: List[Dict], pr: Optional[Dict], pr_diff: str, last_agent_run: Optional[Dict]) -> str:
-    issue_title = issue.get("title","")
-    issue_body = issue.get("body","") or ""
+    issue_title = issue.get("title", "")
+    issue_body = issue.get("body", "") or ""
     last_comments = comments[-6:] if comments else []
     convo = []
     for c in last_comments:
-        who = c.get("user",{}).get("login","")
-        body = (c.get("body","") or "")[:4000]
+        who = c.get("user", {}).get("login", "")
+        body = (c.get("body", "") or "")[:4000]
         convo.append(f"[{who}]\n{body}\n")
     convo_txt = "\n".join(convo).strip()
 
@@ -192,22 +237,23 @@ PR diff context:
 {pr_diff}
 """.strip()
 
+
 def main():
     owner, repo = parse_repo()
 
-    gh_pat = _clean_secret(os.environ.get("GH_PAT"), "GH_PAT")
+    gh_token = _get_github_token()
     openai_key = _clean_secret(os.environ.get("OPENAI_API_KEY"), "OPENAI_API_KEY")
 
     ctx = Ctx(
         owner=owner,
         repo=repo,
-        issue_number=int(os.environ.get("ISSUE_NUMBER","2")),
-        gh_pat=gh_pat,
+        issue_number=int(os.environ.get("ISSUE_NUMBER", "2")),
+        gh_token=gh_token,
         openai_key=openai_key,
-        openai_model=os.environ.get("OPENAI_MODEL","gpt-4o-mini"),
-        agent_workflow_file=os.environ.get("AGENT_WORKFLOW_FILE","agent.yml"),
-        min_interval_minutes=int(os.environ.get("MIN_INTERVAL_MINUTES","12")),
-        max_comments=int(os.environ.get("MAX_COMMENTS","18")),
+        openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+        agent_workflow_file=os.environ.get("AGENT_WORKFLOW_FILE", "agent.yml"),
+        min_interval_minutes=int(os.environ.get("MIN_INTERVAL_MINUTES", "12")),
+        max_comments=int(os.environ.get("MAX_COMMENTS", "18")),
     )
 
     issue = get_issue(ctx)
@@ -230,7 +276,7 @@ def main():
     pr = None
     pr_diff = "(no open PR)"
     if pulls:
-        pulls.sort(key=lambda x: x.get("updated_at",""), reverse=True)
+        pulls.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
         pr = pulls[0]
         files = get_pull_files(ctx, pr["number"])
         pr_diff = summarize_pr_diff(files)
@@ -248,6 +294,7 @@ def main():
         dispatch_workflow(ctx, ctx.agent_workflow_file)
     except Exception as e:
         print("Dispatch failed (may be OK):", e)
+
 
 if __name__ == "__main__":
     main()
