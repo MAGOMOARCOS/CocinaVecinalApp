@@ -1,27 +1,9 @@
-name: Agent (CocinaVecinal)
+﻿name: Agent (Codex)
 
 on:
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: "preflight = npm build; full = Codex + PR"
-        required: true
-        type: choice
-        options:
-          - preflight
-          - full
-        default: preflight
-      instruction:
-        description: "Opcional: instrucción puntual (si vacío, usa AGENT_TASKS.md)"
-        required: false
-        type: string
-
-  push:
-    paths:
-      - AGENT_TASKS.md
-
   issue_comment:
     types: [created]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -33,130 +15,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  agent:
-    if: |
-      github.actor == 'MAGOMOARCOS' &&
-      (github.event_name != 'issue_comment' || contains(github.event.comment.body, '/agent'))
+  run:
+    if: >
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent'))
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
+          fetch-depth: 0
 
-      - name: Install deps
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
-
-      - name: Preflight build
-        id: preflight
-        shell: bash
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          npm run build 2>&1 | tee preflight.log
-
-      - name: Preflight summary
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "### Preflight: npm run build" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Resultado:** ${{ steps.preflight.outcome }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
-          tail -n 120 preflight.log >> "$GITHUB_STEP_SUMMARY"
-          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Prepare Codex prompt
-        if: |
-          (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full') ||
-          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          EXTRA="$(python -c 'import json,os; e=json.load(open(os.environ["GITHUB_EVENT_PATH"],"r",encoding="utf-8")); print(((e.get("inputs") or {}).get("instruction") or (e.get("comment") or {}).get("body") or "").strip())')"
-
-          mkdir -p .github/codex
-
-          cat > .github/codex/prompt.md <<'EOF'
-          # CocinaVecinalApp — tarea del agente
-
-          Objetivo: arreglar el build y ejecutar lo que pida AGENT_TASKS.md sin romper despliegue.
-
-          Reglas:
-          - Trabaja SOLO dentro del repo.
-          - No introduzcas secretos ni valores reales: usa variables de entorno y documenta en `.env.example`.
-          - Arregla imports rotos (p.ej. `@/lib/supabaseClient`), alias y exports.
-          - Mantén cambios mínimos y con TypeScript correcto.
-          - Tras cambiar, ejecuta `npm run build` y deja el repo compilando.
-
-          ## AGENT_TASKS.md
-          EOF
-
-          if [ -f AGENT_TASKS.md ]; then
-            cat AGENT_TASKS.md >> .github/codex/prompt.md
-          else
-            echo "(AGENT_TASKS.md no encontrado en la raíz)" >> .github/codex/prompt.md
-          fi
-
-          echo -e "\n\n## Log preflight (tail)\n\`\`\`" >> .github/codex/prompt.md
-          tail -n 200 preflight.log >> .github/codex/prompt.md
-          echo -e "\n\`\`\`\n" >> .github/codex/prompt.md
-
-          if [ -n "$EXTRA" ]; then
-            echo -e "\n\n## Instrucción extra\n$EXTRA\n" >> .github/codex/prompt.md
-          fi
-
-      - name: Run Codex
-        id: codex
-        if: |
-          (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full') ||
-          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
-        uses: openai/codex-action@v1
+      - name: Run Codex (repo agent)
+        uses: openai/codex@v1
         with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: .github/codex/prompt.md
-          output-file: codex-output.md
-          safety-strategy: drop-sudo
-          sandbox: workspace-write
-          codex-args: '["--full-auto"]'
-          allow-users: MAGOMOARCOS
-
-      - name: Build after Codex
-        if: |
-          (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full') ||
-          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
-        shell: bash
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          npm run build 2>&1 | tee post-codex-build.log
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: ${{ github.event.comment.body }}
+          output_file: codex-output.md
 
       - name: Create PR with changes
-        if: |
-          (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'full') ||
-          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent full'))
-        uses: peter-evans/create-pull-request@v8
+        uses: peter-evans/create-pull-request@v6
         with:
+          commit-message: "chore(agent): apply codex changes"
+          title: "Agent changes"
+          body: |
+            Automated changes by Agent workflow.
+
+            See codex-output.md in the PR for details.
           branch: agent/codex-${{ github.run_id }}
           delete-branch: true
-          commit-message: "chore(agent): codex changes"
-          title: "Agent: fix build / apply AGENT_TASKS"
-          body: |
-            Cambios generados por Codex Action.
-            - Preflight: ${{ steps.preflight.outcome }}
-            - Salida Codex: ver `codex-output.md`
