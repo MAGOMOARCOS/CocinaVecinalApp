@@ -1,21 +1,28 @@
 ﻿#!/usr/bin/env python3
 import json
 import os
-import re
-import sys
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
+import urllib.error
 
 GITHUB_API = "https://api.github.com"
 
-def _req(method: str, url: str, token: str, data: Optional[Dict]=None, accept: str="application/vnd.github+json") -> Any:
+def _clean_secret(s: Optional[str], name: str) -> str:
+    s = (s or "").replace("\r", "").replace("\n", "").strip()
+    if not s:
+        raise RuntimeError(f"{name} is missing/empty")
+    return s
+
+def _req(method: str, url: str, token: str, data: Optional[Dict]=None,
+         accept: str="application/vnd.github+json") -> Any:
+    token = _clean_secret(token, "GH_PAT")
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": accept,
         "User-Agent": "cv-autocontroller",
+        "X-GitHub-Api-Version": "2022-11-28",
     }
     body = None
     if data is not None:
@@ -29,31 +36,38 @@ def _req(method: str, url: str, token: str, data: Optional[Dict]=None, accept: s
         return json.loads(raw.decode("utf-8"))
 
 def _openai_responses(model: str, api_key: str, input_text: str) -> str:
+    api_key = _clean_secret(api_key, "OPENAI_API_KEY")
     url = "https://api.openai.com/v1/responses"
-    payload = {
-        "model": model,
-        "input": input_text,
-    }
-    data = json.dumps(payload).encode("utf-8")
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    req = urllib.request.Request(url, method="POST", headers=headers, data=data)
-    with urllib.request.urlopen(req) as resp:
-        obj = json.loads(resp.read().decode("utf-8"))
-    # Responses API: output_text is easiest
-    txt = obj.get("output_text")
-    if txt:
-        return txt
-    # fallback: try to reconstruct
-    out = obj.get("output", [])
-    parts = []
-    for item in out:
-        for c in item.get("content", []):
-            if c.get("type") == "output_text":
-                parts.append(c.get("text", ""))
-    return "\n".join(parts).strip()
+
+    def call(m: str) -> str:
+        payload = {"model": m, "input": input_text}
+        data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        req = urllib.request.Request(url, method="POST", headers=headers, data=data)
+        with urllib.request.urlopen(req) as resp:
+            obj = json.loads(resp.read().decode("utf-8"))
+        txt = obj.get("output_text")
+        if txt:
+            return txt
+        out = obj.get("output", [])
+        parts = []
+        for item in out:
+            for c in item.get("content", []):
+                if c.get("type") == "output_text":
+                    parts.append(c.get("text", ""))
+        return "\n".join(parts).strip()
+
+    # intento 1: modelo pedido; si falla por modelo no disponible, fallback a gpt-4o-mini
+    try:
+        return call(model).strip()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        if e.code in (400, 404) and ("model" in body.lower() or "not_found" in body.lower()):
+            return call("gpt-4o-mini").strip()
+        raise
 
 @dataclass
 class Ctx:
@@ -71,7 +85,7 @@ def parse_repo() -> Tuple[str,str]:
     repo = os.environ.get("GITHUB_REPOSITORY","")
     if "/" not in repo:
         raise RuntimeError("GITHUB_REPOSITORY missing")
-    return tuple(repo.split("/",1))  # owner, repo
+    return tuple(repo.split("/",1))
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -94,7 +108,7 @@ def dispatch_workflow(ctx: Ctx, workflow_file: str) -> None:
         "ref": "main"
     })
 
-def last_agent_activity(ctx: Ctx) -> Tuple[Optional[Dict], Optional[datetime]]:
+def last_agent_activity(ctx: Ctx):
     runs = list_workflow_runs(ctx, ctx.agent_workflow_file, per_page=30)
     if not runs:
         return None, None
@@ -106,10 +120,7 @@ def last_agent_activity(ctx: Ctx) -> Tuple[Optional[Dict], Optional[datetime]]:
 
 def agent_in_progress(ctx: Ctx) -> bool:
     runs = list_workflow_runs(ctx, ctx.agent_workflow_file, per_page=10)
-    for r in runs:
-        if r.get("status") in ("in_progress","queued"):
-            return True
-    return False
+    return any(r.get("status") in ("in_progress","queued") for r in runs)
 
 def list_pulls(ctx: Ctx) -> List[Dict]:
     return _req("GET", f"{GITHUB_API}/repos/{ctx.owner}/{ctx.repo}/pulls?state=open&per_page=50", ctx.gh_pat)
@@ -124,10 +135,8 @@ def summarize_pr_diff(files: List[Dict], max_files: int=25) -> str:
         status = f.get("status")
         adds = f.get("additions")
         dels = f.get("deletions")
-        patch = f.get("patch","")
-        patch_snip = ""
-        if patch:
-            patch_snip = "\n".join(patch.splitlines()[:60])
+        patch = f.get("patch","") or ""
+        patch_snip = "\n".join(patch.splitlines()[:60]) if patch else ""
         lines.append(f"- {fn} [{status}] (+{adds}/-{dels})")
         if patch_snip:
             lines.append("```diff")
@@ -137,15 +146,14 @@ def summarize_pr_diff(files: List[Dict], max_files: int=25) -> str:
         lines.append(f"...({len(files)-max_files} files more)")
     return "\n".join(lines).strip()
 
-def build_input(ctx: Ctx, issue: Dict, comments: List[Dict], pr: Optional[Dict], pr_diff: str, last_agent_run: Optional[Dict]) -> str:
+def build_input(issue: Dict, comments: List[Dict], pr: Optional[Dict], pr_diff: str, last_agent_run: Optional[Dict]) -> str:
     issue_title = issue.get("title","")
     issue_body = issue.get("body","") or ""
     last_comments = comments[-6:] if comments else []
     convo = []
     for c in last_comments:
         who = c.get("user",{}).get("login","")
-        body = c.get("body","") or ""
-        body = body[:4000]
+        body = (c.get("body","") or "")[:4000]
         convo.append(f"[{who}]\n{body}\n")
     convo_txt = "\n".join(convo).strip()
 
@@ -163,11 +171,11 @@ You are an autonomous controller that drives a GitHub repo forward by posting a 
 Goal: implement and ship CocinaVecinalApp end-to-end (fix build, deploy, core features). Use the issue + latest PR diff as state.
 
 Rules:
-- Output ONLY the instruction body (plain text), no commentary, no JSON.
+- Output ONLY the instruction body (plain text), no commentary.
 - The instruction must start with: full
 - Then a numbered plan (max 8 steps).
 - Include exact file paths to edit/create.
-- If there is an open PR, your instruction should focus on finishing/adjusting that PR or creating the next incremental PR.
+- If there is an open PR, focus on finishing/adjusting that PR (or the next small PR).
 - Prefer small, mergeable changes that unblock build/deploy first.
 
 Issue: {issue_title}
@@ -186,13 +194,17 @@ PR diff context:
 
 def main():
     owner, repo = parse_repo()
+
+    gh_pat = _clean_secret(os.environ.get("GH_PAT"), "GH_PAT")
+    openai_key = _clean_secret(os.environ.get("OPENAI_API_KEY"), "OPENAI_API_KEY")
+
     ctx = Ctx(
         owner=owner,
         repo=repo,
         issue_number=int(os.environ.get("ISSUE_NUMBER","2")),
-        gh_pat=os.environ["GH_PAT"],
-        openai_key=os.environ["OPENAI_API_KEY"],
-        openai_model=os.environ.get("OPENAI_MODEL","gpt-5-mini"),
+        gh_pat=gh_pat,
+        openai_key=openai_key,
+        openai_model=os.environ.get("OPENAI_MODEL","gpt-4o-mini"),
         agent_workflow_file=os.environ.get("AGENT_WORKFLOW_FILE","agent.yml"),
         min_interval_minutes=int(os.environ.get("MIN_INTERVAL_MINUTES","12")),
         max_comments=int(os.environ.get("MAX_COMMENTS","18")),
@@ -201,44 +213,37 @@ def main():
     issue = get_issue(ctx)
     comments = list_issue_comments(ctx)
 
-    # Stop if too many comments (safety)
     if len(comments) >= ctx.max_comments:
         print(f"Max comments reached ({len(comments)}). Exiting.")
         return
 
-    # Cooldown
     last_run, last_dt = last_agent_activity(ctx)
-    if last_dt:
-        if now_utc() - last_dt < timedelta(minutes=ctx.min_interval_minutes):
-            print("Cooldown not met. Exiting.")
-            return
+    if last_dt and (now_utc() - last_dt < timedelta(minutes=ctx.min_interval_minutes)):
+        print("Cooldown not met. Exiting.")
+        return
 
     if agent_in_progress(ctx):
         print("Agent workflow in progress. Exiting.")
         return
 
-    # Latest open PR (if any)
     pulls = list_pulls(ctx)
     pr = None
     pr_diff = "(no open PR)"
     if pulls:
-        # pick the most recently updated
         pulls.sort(key=lambda x: x.get("updated_at",""), reverse=True)
         pr = pulls[0]
         files = get_pull_files(ctx, pr["number"])
         pr_diff = summarize_pr_diff(files)
 
-    prompt = build_input(ctx, issue, comments, pr, pr_diff, last_run)
+    prompt = build_input(issue, comments, pr, pr_diff, last_run)
     plan = _openai_responses(ctx.openai_model, ctx.openai_key, prompt).strip()
     if not plan:
         print("Empty plan. Exiting.")
         return
 
-    controller_run_url = os.environ.get("GITHUB_SERVER_URL","https://github.com") + f"/{ctx.owner}/{ctx.repo}/actions"
-    body = f"/agent {plan}\n\n---\nAutoController: {controller_run_url}"
+    body = f"/agent {plan}"
     post_issue_comment(ctx, body)
 
-    # Kick agent workflow via dispatch as well (belt & suspenders)
     try:
         dispatch_workflow(ctx, ctx.agent_workflow_file)
     except Exception as e:
