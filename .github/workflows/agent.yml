@@ -1,30 +1,133 @@
-      - name: Create agent branch + push (unique)
+name: Repo Agent (Codex) - Fix Build + PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "preflight=solo build. full=ejecuta codex + PR."
+        required: true
+        default: "full"
+        type: choice
+        options: [preflight, full]
+      instruction:
+        description: "Instrucción opcional (si vacío, usa AGENT_TASKS.md)."
+        required: false
+        type: string
+
+  issues:
+    types: [labeled]
+
+  issue_comment:
+    types: [created]
+
+  push:
+    paths:
+      - "AGENT_TASKS.md"
+
+concurrency:
+  group: repo-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+
+    # Ejecuta si:
+    # - workflow_dispatch
+    # - push a AGENT_TASKS.md
+    # - issue con label "agent"
+    # - comentario que contenga "/agent"
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      (github.event_name == 'issues' && github.event.label.name == 'agent') ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent'))
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install deps
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Preflight build (always)
+        run: npm run build
+
+      - name: Prepare instruction
+        id: instr
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
+          INS=""
 
-          BRANCH="agent/codex-${{ github.run_id }}-${{ github.run_attempt }}"
-          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
-
-          git config user.name "repo-agent"
-          git config user.email "repo-agent@users.noreply.github.com"
-
-          # crea rama nueva SIEMPRE (única por run+attempt)
-          git checkout -b "$BRANCH"
-
-          # commit solo si hay cambios
-          if git diff --quiet; then
-            echo "No changes to commit."
-            exit 0
+          # Si viene por workflow_dispatch
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            INS="${{ inputs.instruction }}"
           fi
 
-          git add -A
-          git commit -m "fix: autofix build via agent"
-
-          # push seguro (si por cualquier razón existe, crea otra rama aún más única)
-          if ! git push -u origin "$BRANCH"; then
-            BRANCH="agent/codex-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}"
-            echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
-            git checkout -b "$BRANCH"
-            git push -u origin "$BRANCH"
+          # Si viene por issue_comment /agent ...
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            INS="${{ github.event.comment.body }}"
           fi
+
+          # Si sigue vacío, usa AGENT_TASKS.md
+          if [ -z "$INS" ] && [ -f AGENT_TASKS.md ]; then
+            INS="$(cat AGENT_TASKS.md)"
+          fi
+
+          # Fallback mínimo
+          if [ -z "$INS" ]; then
+            INS="Fix build so npm run build passes. Then open PR."
+          fi
+
+          # Guardar como output multilinea
+          {
+            echo "text<<'EOF'"
+            echo "$INS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Codex (only in full)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'full' }}
+        uses: openai/codex-action@v1
+        with:
+          # El action toma OPENAI_API_KEY desde secrets automáticamente si existe,
+          # pero lo dejamos explícito por claridad.
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          instructions: ${{ steps.instr.outputs.text }}
+
+      - name: Re-run build after Codex
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'full' }}
+        run: npm run build
+
+      - name: Create PR (safe, avoids non-fast-forward)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'full' }}
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GH_PAT }}
+          commit-message: "chore(agent): fix build + apply agent changes"
+          title: "chore(agent): fix build + apply agent changes"
+          body: |
+            Automated changes by Repo Agent (Codex).
+            - Ensures `npm run build` passes.
+            - Avoids conflict markers.
+          branch: agent/codex-${{ github.run_id }}-${{ github.run_attempt }}
+          delete-branch: true
