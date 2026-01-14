@@ -29,9 +29,9 @@ jobs:
       - name: Run Codex (repo agent)
         uses: openai/codex-action@v1
         with:
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          openai-api-key: ${{ secrets.openai-api-key }}
           prompt: ${{ github.event.comment.body }}
-          output_file: codex-output.md
+          output-file: codex-output.md
 
       - name: Create PR with changes
         uses: peter-evans/create-pull-request@v6
@@ -44,4 +44,5 @@ jobs:
             See codex-output.md in the PR for details.
           branch: agent/codex-${{ github.run_id }}
           delete-branch: true
+
 

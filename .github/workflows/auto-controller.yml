@@ -24,7 +24,7 @@ jobs:
       - name: Run controller
         env:
           GH_PAT: ${{ github.token }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          openai-api-key: ${{ secrets.openai-api-key }}
           OPENAI_MODEL: gpt-5-mini
           ISSUE_NUMBER: "2"
           AGENT_WORKFLOW_FILE: agent.yml
@@ -33,6 +33,7 @@ jobs:
         run: |
           python3 --version
           python3 scripts/agent_controller.py
+
 
 
 
