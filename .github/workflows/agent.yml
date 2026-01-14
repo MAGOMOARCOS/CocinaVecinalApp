@@ -1,16 +1,10 @@
 name: Repo Agent (Codex) - Fix Build + PR
 
-on:  permissions: permissions:
-  contents: write
-  pull-requests: write
-
-  contents: write
-  pull-requests: write
-
+on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "preflight=solo build. full=ejecuta codex + PR."
+        description: "preflight=solo build. full=ejecuta agente + PR."
         required: true
         default: "full"
         type: choice
@@ -18,36 +12,19 @@ on:  permissions: permissions:
       instruction:
         description: "Instrucción opcional (si vacío, usa AGENT_TASKS.md)."
         required: false
-        type: string
-
-  issues:
-    types: [labeled]
-
-  issue_comment:
-    types: [created]
-
-  push:
-    paths:
-      - "AGENT_TASKS.md"
-
-concurrency:
-  group: repo-agent-${{ github.ref }}
-  cancel-in-progress: true
+        default: ""
 
 permissions:
   contents: write
   pull-requests: write
-  issues: write
+
+concurrency:
+  group: repo-agent-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   agent:
     runs-on: ubuntu-latest
-
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push' ||
-      (github.event_name == 'issues' && github.event.label.name == 'agent') ||
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/agent'))
 
     steps:
       - name: Checkout
@@ -62,68 +39,47 @@ jobs:
           cache: "npm"
 
       - name: Install deps
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund
-          fi
+        run: npm ci
 
       - name: Preflight build (always)
         run: npm run build
 
       - name: Prepare instruction
-        id: instr
+        if: ${{ inputs.mode == 'full' }}
         shell: bash
         run: |
-          set -euo pipefail
-          INS=""
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            INS="${{ inputs.instruction }}"
+          set -e
+          if [ -n "${{ inputs.instruction }}" ]; then
+            echo "${{ inputs.instruction }}" > /tmp/AGENT_INSTRUCTION.txt
+          else
+            if [ -f "AGENT_TASKS.md" ]; then
+              cp AGENT_TASKS.md /tmp/AGENT_INSTRUCTION.txt
+            else
+              echo "AGENT_TASKS.md not found and no instruction provided." > /tmp/AGENT_INSTRUCTION.txt
+            fi
           fi
 
-          if [ "${{ github.event_name }}" = "issue_comment" ]; then
-            INS="${{ github.event.comment.body }}"
-          fi
+      - name: Run agent (only in full)
+        if: ${{ inputs.mode == 'full' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node agent/runner.js --instruction-file /tmp/AGENT_INSTRUCTION.txt
 
-          if [ -z "$INS" ] && [ -f AGENT_TASKS.md ]; then
-            INS="$(cat AGENT_TASKS.md)"
-          fi
-
-          if [ -z "$INS" ]; then
-            INS="Fix build so npm run build passes. Then open PR."
-          fi
-
-          # Output multilinea robusto con delimitador aleatorio
-          DELIM="__CODEX_${RANDOM}_$(date +%s)__"
-          {
-            echo "text<<$DELIM"
-            printf '%s\n' "$INS"
-            echo "$DELIM"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Run Codex (only in full)
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'full' }}
-        uses: openai/codex-action@v1
-        with:
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          instructions: ${{ steps.instr.outputs.text }}
-
-      - name: Re-run build after Codex
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'full' }}
+      - name: Re-run build after agent
+        if: ${{ inputs.mode == 'full' }}
         run: npm run build
 
-       - name: Create PR (safe, avoids non-fast-forward)
+      - name: Create PR (safe)
+        if: ${{ inputs.mode == 'full' }}
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ github.token }}
-
           commit-message: "chore(agent): fix build + apply agent changes"
           title: "chore(agent): fix build + apply agent changes"
           body: |
             Automated changes by Repo Agent (Codex).
             - Ensures `npm run build` passes.
-            - Avoids conflict markers.
+            - Applies tasks from AGENT_TASKS.md (or manual instruction).
           branch: agent/codex-${{ github.run_id }}-${{ github.run_attempt }}
           delete-branch: true
