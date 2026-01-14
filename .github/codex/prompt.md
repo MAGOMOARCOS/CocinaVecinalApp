@@ -57,6 +57,7 @@ https://nextjs.org/telemetry
 
   Creating an optimized production build ...
 ✓ Compiled successfully in 5.0s
+✓ Compiled successfully in 5.3s
   Running TypeScript ...
   Collecting page data using 3 workers ...
   Generating static pages using 3 workers (0/5) ...
@@ -64,6 +65,7 @@ https://nextjs.org/telemetry
   Generating static pages using 3 workers (2/5) 
   Generating static pages using 3 workers (3/5) 
 ✓ Generating static pages using 3 workers (5/5) in 212.9ms
+✓ Generating static pages using 3 workers (5/5) in 204.7ms
   Finalizing page optimization ...
   Collecting build traces ...
 
@@ -90,4 +92,20 @@ En app/page.tsx (handleSubmit):
 - Si hay error: setMessage(null) y setError(mensaje).
 Haz que success y error sean mutuamente excluyentes.
 Ejecuta npm run build y abre PR.
+Ahora ya existen en Vercel (Production) estas env vars:
+- NEXT_PUBLIC_SUPABASE_URL
+- NEXT_PUBLIC_SUPABASE_ANON_KEY
+- SUPABASE_SERVICE_ROLE_KEY
+
+Problema actual en producción: al enviar el formulario puede mostrar “Gracias, estás en la lista” pero también “Error al enviar el formulario”.
+Tarea:
+1) Reproducir en producción y revisar Network/Response de POST /api/leads.
+2) Corregir el frontend para que:
+   - NO muestre error cuando la respuesta sea ok (según JSON { ok: true }).
+   - Use data.ok (no solo response.ok) y maneje correctamente errores 4xx/5xx.
+   - Limpie el estado de error en éxito y no dispare doble submit.
+3) Revisar /app/api/leads/route.ts para que siempre responda JSON consistente:
+   { ok: boolean, message?: string, error?: string, stored?: boolean }
+   y use códigos HTTP adecuados (200 éxito, 400 validación, 500 servidor).
+4) Abrir PR con el fix y dejar nota en README de env vars requeridas.
 

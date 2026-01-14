@@ -6,6 +6,7 @@ export default function Home() {
   const formRef = useRef<HTMLDivElement | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   function scrollToForm() {
     formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -13,6 +14,9 @@ export default function Home() {
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (isSubmitting) return;
+
+    setMessage(null);
     setError(null);
     setMessage(null);
 
@@ -36,6 +40,8 @@ export default function Home() {
       return;
     }
 
+    setIsSubmitting(true);
+
     try {
       const response = await fetch('/api/leads', {
         method: 'POST',
@@ -45,23 +51,40 @@ export default function Home() {
         body: JSON.stringify({ name, email, city, role, wa, honeypot }),
       });
 
-      const data = await response.json().catch(() => null);
-      const apiMessage =
-        (data as { message?: string })?.message ||
-        'No pudimos procesar tu solicitud';
+      const data = (await response.json().catch(() => null)) as
+        | { ok?: boolean; message?: string; error?: string }
+        | null;
+
+      const success = data?.ok === true;
+      const successMessage = data?.message || 'Gracias, estás en la lista';
 
       if (response.ok && (data as { ok?: boolean })?.ok) {
         setError(null);
         setMessage('Gracias, estás en la lista');
+
+      if (success) {
+        setMessage(successMessage);
+        setError(null);
         e.currentTarget.reset();
         return;
       }
 
+ agent/codex-20973540860
       setMessage(null);
       setError(apiMessage);
+      const apiError =
+        data?.error ||
+        data?.message ||
+        (!response.ok && response.statusText) ||
+        'Error al enviar el formulario';
+
+      setMessage(null);
+      setError(apiError);
     } catch (err) {
       setMessage(null);
       setError('Error al enviar el formulario');
+    } finally {
+      setIsSubmitting(false);
     }
   }
 
@@ -184,7 +207,9 @@ export default function Home() {
               <input name="honeypot" type="text" style={{ display: 'none' }} />
 
               <div className="cta" style={{ marginTop: 12 }}>
-                <button className="primary" type="submit">Apuntarme</button>
+                <button className="primary" type="submit" disabled={isSubmitting} aria-busy={isSubmitting}>
+                  {isSubmitting ? 'Enviando…' : 'Apuntarme'}
+                </button>
               </div>
 
               {message && <div className="ok">{message}</div>}

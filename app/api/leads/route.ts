@@ -21,7 +21,7 @@ export async function POST(req: Request) {
     payload = await req.json();
   } catch {
     return NextResponse.json(
-      { ok: false, message: "JSON inválido" },
+      { ok: false, error: "JSON inválido" },
       { status: 400 }
     );
   }
@@ -35,21 +35,21 @@ export async function POST(req: Request) {
 
   if (honeypot) {
     return NextResponse.json(
-      { ok: false, message: "Solicitud no válida" },
+      { ok: false, error: "Solicitud no válida" },
       { status: 400 }
     );
   }
 
   if (!name || !email) {
     return NextResponse.json(
-      { ok: false, message: "Nombre y email son requeridos" },
+      { ok: false, error: "Nombre y email son requeridos" },
       { status: 400 }
     );
   }
 
   if (!emailRegex.test(email)) {
     return NextResponse.json(
-      { ok: false, message: "Email inválido" },
+      { ok: false, error: "Email inválido" },
       { status: 400 }
     );
   }
@@ -59,14 +59,15 @@ export async function POST(req: Request) {
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!supabaseUrl || !supabaseServiceKey) {
-    console.warn(
-      "[leads] Falta configuración de Supabase. Guarda en fallback."
+    console.warn("[leads] Falta configuración de Supabase.");
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Falta configuración de Supabase",
+        stored: false,
+      },
+      { status: 500 }
     );
-    return NextResponse.json({
-      ok: true,
-      stored: false,
-      message: "capturado pero no guardado: falta config",
-    });
   }
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey, {
@@ -87,11 +88,14 @@ export async function POST(req: Request) {
 
     if (error) {
       console.error("[leads] Error al guardar lead", error);
-      return NextResponse.json({
-        ok: true,
-        stored: false,
-        message: "capturado pero no guardado: falta config",
-      });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "No se pudo guardar el lead",
+          stored: false,
+        },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
@@ -102,7 +106,7 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("[leads] Error inesperado", error);
     return NextResponse.json(
-      { ok: false, message: "Error inesperado" },
+      { ok: false, error: "Error inesperado", stored: false },
       { status: 500 }
     );
   }
