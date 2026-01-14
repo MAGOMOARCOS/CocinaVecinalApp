@@ -18,7 +18,6 @@ export default function Home() {
 
     setMessage(null);
     setError(null);
-    setMessage(null);
 
     const fd = new FormData(e.currentTarget);
     const name = String(fd.get('name') || '').trim();
@@ -55,23 +54,12 @@ export default function Home() {
         | { ok?: boolean; message?: string; error?: string }
         | null;
 
-      const success = data?.ok === true;
-      const successMessage = data?.message || 'Gracias, estás en la lista';
-
-      if (response.ok && (data as { ok?: boolean })?.ok) {
-        setError(null);
-        setMessage('Gracias, estás en la lista');
-
-      if (success) {
-        setMessage(successMessage);
+      if (response.ok && data?.ok) {
+        setMessage(data.message || 'Gracias, estás en la lista');
         setError(null);
         e.currentTarget.reset();
         return;
       }
-
- agent/codex-20973540860
-      setMessage(null);
-      setError(apiMessage);
       const apiError =
         data?.error ||
         data?.message ||
