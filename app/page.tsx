@@ -18,13 +18,12 @@ export default function Home() {
 
     setMessage(null);
     setError(null);
-    setMessage(null);
 
     const fd = new FormData(e.currentTarget);
     const name = String(fd.get('name') || '').trim();
     const email = String(fd.get('email') || '').trim();
     const city = String(fd.get('city') || 'Medellín').trim() || 'Medellín';
-    const role = String(fd.get('role') || 'Ambos');
+    const role = String(fd.get('role') || 'Ambos').trim() || 'Ambos';
     const wa = String(fd.get('wa') || '').trim();
     const honeypot = String(fd.get('honeypot') || '').trim();
 
@@ -45,41 +44,29 @@ export default function Home() {
     try {
       const response = await fetch('/api/leads', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, email, city, role, wa, honeypot }),
       });
 
-      const data = (await response.json().catch(() => null)) as
-        | { ok?: boolean; message?: string; error?: string }
-        | null;
+      const data: { ok?: boolean; message?: string; error?: string } | null =
+        await response.json().catch(() => null);
 
-      const success = data?.ok === true;
-      const successMessage = data?.message || 'Gracias, estás en la lista';
+      const success = response.ok && data?.ok === true;
 
-      if (response.ok && (data as { ok?: boolean })?.ok) {
-        setError(null);
-        setMessage('Gracias, estás en la lista');
+      const apiMessage =
+        data?.message ||
+        data?.error ||
+        (!response.ok && response.statusText) ||
+        (success ? 'Gracias, estás en la lista' : 'No pudimos procesar tu solicitud');
 
       if (success) {
-        setMessage(successMessage);
         setError(null);
+        setMessage(apiMessage || 'Gracias, estás en la lista');
         e.currentTarget.reset();
-        return;
+      } else {
+        setMessage(null);
+        setError(apiMessage || 'Error al enviar el formulario');
       }
-
- agent/codex-20973540860
-      setMessage(null);
-      setError(apiMessage);
-      const apiError =
-        data?.error ||
-        data?.message ||
-        (!response.ok && response.statusText) ||
-        'Error al enviar el formulario';
-
-      setMessage(null);
-      setError(apiError);
     } catch (err) {
       setMessage(null);
       setError('Error al enviar el formulario');
