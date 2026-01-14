@@ -111,11 +111,11 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'full' }}
         run: npm run build
 
-      - name: Create PR (safe, avoids non-fast-forward)
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'full' }}
+       - name: Create PR (safe, avoids non-fast-forward)
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.GH_PAT }}
+          token: ${{ github.token }}
+
           commit-message: "chore(agent): fix build + apply agent changes"
           title: "chore(agent): fix build + apply agent changes"
           body: |
