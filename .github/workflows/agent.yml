@@ -27,7 +27,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run Codex (repo agent)
-        uses: openai/codex@v1
+        uses: openai/codex-action@v1
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           prompt: ${{ github.event.comment.body }}
@@ -44,3 +44,4 @@ jobs:
             See codex-output.md in the PR for details.
           branch: agent/codex-${{ github.run_id }}
           delete-branch: true
+
