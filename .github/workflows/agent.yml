@@ -1,6 +1,9 @@
 name: Repo Agent (Codex) - Fix Build + PR
 
-on:
+on:  permissions:
+  contents: write
+  pull-requests: write
+
   workflow_dispatch:
     inputs:
       mode:
