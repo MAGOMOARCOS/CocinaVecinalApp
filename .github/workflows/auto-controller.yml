@@ -1,15 +1,19 @@
-﻿name: AutoController (CocinaVecinal)
+name: AutoController (CocinaVecinal)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/12 * * * *"
+    # cada 15 min (ajusta si quieres)
+    - cron: "*/15 * * * *"
 
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
-  actions: write
+
+concurrency:
+  group: auto-controller-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
   controller:
@@ -23,30 +27,18 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Sanity check secrets (no imprime valores)
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          python - <<'PY'
-          import os
-          assert os.getenv("OPENAI_API_KEY"), "OPENAI_API_KEY missing/empty"
-          assert os.getenv("GH_PAT"), "GH_PAT missing/empty"
-          print("OK: Secrets present")
-          PY
-
       - name: Run controller
         env:
-          # >>> ESTOS DOS NOMBRES SON LOS QUE TU PYTHON LEE <<<
+          # IMPORTANTÍSIMO: estos nombres deben coincidir con tus Secrets EXACTOS
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GH_PAT: ${{ secrets.GH_PAT }}
 
-          # Config del controller
+          # Config del controlador (ajusta a tu gusto)
           OPENAI_MODEL: gpt-5-mini
           ISSUE_NUMBER: "2"
           AGENT_WORKFLOW_FILE: agent.yml
           MIN_INTERVAL_MINUTES: "12"
           MAX_COMMENTS: "18"
         run: |
-          python --version
-          python scripts/agent_controller.py
+          python3 --version
+          python3 scripts/agent_controller.py
