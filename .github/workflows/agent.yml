@@ -62,7 +62,7 @@ jobs:
       - name: Create agent branch
         run: |
           set -e
-          BRANCH="agent/codex-${GITHUB_RUN_ID}"
+BRANCH="agent/codex-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
           git checkout -b "$BRANCH"
 
