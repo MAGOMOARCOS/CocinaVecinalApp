@@ -17,8 +17,9 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: repo-agent
-  cancel-in-progress: true
+  group: repo-agent-${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
+
 
 jobs:
   agent:
