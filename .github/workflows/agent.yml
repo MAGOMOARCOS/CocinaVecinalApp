@@ -37,11 +37,6 @@ jobs:
   agent:
     runs-on: ubuntu-latest
 
-    # Ejecuta si:
-    # - workflow_dispatch
-    # - push a AGENT_TASKS.md
-    # - issue con label "agent"
-    # - comentario que contenga "/agent"
     if: >
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'push' ||
@@ -75,42 +70,37 @@ jobs:
         id: instr
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           INS=""
 
-          # Si viene por workflow_dispatch
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             INS="${{ inputs.instruction }}"
           fi
 
-          # Si viene por issue_comment /agent ...
           if [ "${{ github.event_name }}" = "issue_comment" ]; then
             INS="${{ github.event.comment.body }}"
           fi
 
-          # Si sigue vacío, usa AGENT_TASKS.md
           if [ -z "$INS" ] && [ -f AGENT_TASKS.md ]; then
             INS="$(cat AGENT_TASKS.md)"
           fi
 
-          # Fallback mínimo
           if [ -z "$INS" ]; then
             INS="Fix build so npm run build passes. Then open PR."
           fi
 
-          # Guardar como output multilinea
+          # Output multilinea robusto con delimitador aleatorio
+          DELIM="__CODEX_${RANDOM}_$(date +%s)__"
           {
-            echo "text<<'EOF'"
-            echo "$INS"
-            echo "EOF"
+            echo "text<<$DELIM"
+            printf '%s\n' "$INS"
+            echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
 
       - name: Run Codex (only in full)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'full' }}
         uses: openai/codex-action@v1
         with:
-          # El action toma OPENAI_API_KEY desde secrets automáticamente si existe,
-          # pero lo dejamos explícito por claridad.
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           instructions: ${{ steps.instr.outputs.text }}
 
