@@ -3,14 +3,8 @@ name: Repo Agent (Codex) - Fix Build + PR
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: "preflight = solo build. full = build + Codex + PR."
-        required: true
-        default: "full"
-        type: choice
-        options: [preflight, full]
       instruction:
-        description: "Si está vacío, usa AGENT_TASKS.md"
+        description: "Instrucción directa para el agente (si se deja vacío, usa AGENT_TASKS.md)"
         required: false
         type: string
 
@@ -18,159 +12,137 @@ on:
     paths:
       - "AGENT_TASKS.md"
 
-concurrency:
-  group: repo-agent-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: repo-agent
+  cancel-in-progress: true
+
 jobs:
-  preflight:
-    runs-on: ubuntu-latest
-    outputs:
-      ok: ${{ steps.pf.outputs.ok }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Install deps
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund
-          fi
-
-      - name: Preflight build
-        id: pf
-        shell: bash
-        run: |
-          set +e
-          npm run build
-          code=$?
-          if [ $code -eq 0 ]; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          fi
-          exit 0
-
-  codex_fix_and_pr:
-    needs: preflight
-    if: >
-      (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') ||
-      (github.event_name == 'push')
+  agent:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout (with PAT)
+      # ---------------------------
+      # Checkout con PAT
+      # ---------------------------
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
 
-      - name: Setup Node
+      # ---------------------------
+      # Node.js
+      # ---------------------------
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
 
-      - name: Install deps
-        shell: bash
+      # ---------------------------
+      # Instalar dependencias
+      # ---------------------------
+      - name: Install dependencies
         run: |
-          set -euo pipefail
+          set -e
           if [ -f package-lock.json ]; then
             npm ci --no-audit --no-fund
           else
             npm install --no-audit --no-fund
           fi
 
+      # ---------------------------
+      # Crear rama del agente
+      # ---------------------------
       - name: Create agent branch
-        shell: bash
         run: |
-          set -euo pipefail
-          BR="agent/codex-${GITHUB_RUN_ID}"
-          echo "BRANCH=$BR" >> "$GITHUB_ENV"
-          git checkout -b "$BR"
+          set -e
+          BRANCH="agent/codex-${GITHUB_RUN_ID}"
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          git checkout -b "$BRANCH"
 
-      - name: Compose instruction (input or AGENT_TASKS.md)
-        shell: bash
+      # ---------------------------
+      # Preparar instrucción
+      # ---------------------------
+      - name: Prepare agent instruction
         run: |
-          set -euo pipefail
+          set -e
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.instruction }}" ]; then
-            printf "%s\n" "${{ inputs.instruction }}" > /tmp/AGENT_INSTRUCTION.txt
+            echo "${{ inputs.instruction }}" > /tmp/AGENT_INSTRUCTION.txt
           else
             if [ ! -f AGENT_TASKS.md ]; then
-              echo "AGENT_TASKS.md no existe. Crea el archivo o lanza workflow_dispatch con instruction." >&2
+              echo "ERROR: No existe AGENT_TASKS.md ni se pasó instrucción manual."
               exit 1
             fi
             cp AGENT_TASKS.md /tmp/AGENT_INSTRUCTION.txt
           fi
-          echo "----- INSTRUCTION -----"
-          sed -n '1,200p' /tmp/AGENT_INSTRUCTION.txt
-          echo "-----------------------"
 
-      - name: Run Codex (apply patch / fix build)
+      # ---------------------------
+      # EJECUTAR CODEX (CORRECTO)
+      # ---------------------------
+      - name: Run Codex Repo Agent
         uses: openai/codex-action@v1
         with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           prompt-file: /tmp/AGENT_INSTRUCTION.txt
-          # Recomendación: mantén el scope limitado a la repo y a comandos locales.
-          # Codex ejecutará comandos según el prompt; aquí no le damos permisos extra.
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          codex-home: ${{ github.workspace }}/.codex
+          sandbox: workspace-write
+          safety-strategy: drop-sudo
 
+      # ---------------------------
+      # Verificar conflictos Git
+      # ---------------------------
       - name: Fail if conflict markers exist
-        shell: bash
         run: |
-          set -euo pipefail
-          if grep -RIn --exclude-dir=node_modules --exclude-dir=.git -E '^(<<<<<<<|=======|>>>>>>>)' . ; then
-            echo "Encontrados conflict markers. Abortando." >&2
+          set -e
+          if grep -RIn --exclude-dir=node_modules --exclude-dir=.git -E '^(<<<<<<<|=======|>>>>>>>)' .; then
+            echo "ERROR: Conflict markers detectados."
             exit 1
           fi
 
-      - name: Build (must pass)
-        shell: bash
+      # ---------------------------
+      # Build obligatorio
+      # ---------------------------
+      - name: npm run build
         run: |
-          set -euo pipefail
+          set -e
           npm run build
 
+      # ---------------------------
+      # Commit
+      # ---------------------------
       - name: Commit changes
-        shell: bash
         run: |
-          set -euo pipefail
-          git config user.name  "repo-agent"
+          set -e
+          git config user.name "repo-agent"
           git config user.email "repo-agent@users.noreply.github.com"
           git add -A
           if git diff --cached --quiet; then
-            echo "No hay cambios para commitear."
+            echo "No hay cambios que commitear."
             exit 0
           fi
-          git commit -m "Fix: make npm run build pass (page.tsx handleSubmit)"
+          git commit -m "Agent: fix build (handleSubmit)"
 
+      # ---------------------------
+      # Push
+      # ---------------------------
       - name: Push branch
-        shell: bash
         run: |
-          set -euo pipefail
           git push -u origin "$BRANCH"
 
-      - name: Create PR
-        shell: bash
+      # ---------------------------
+      # Crear PR
+      # ---------------------------
+      - name: Create Pull Request
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          set -euo pipefail
-          TITLE="Agent: fix build + handleSubmit patch"
-          BODY="Automated fix by repo-agent.\n\n- Ensures npm run build passes\n- Ensures no conflict markers remain"
-          gh pr create --title "$TITLE" --body "$BODY" --base main --head "$BRANCH" || true
+          gh pr create \
+            --title "Agent: fix build + handleSubmit" \
+            --body "PR automática del Repo-Agent (Codex). Build verificado y sin conflictos." \
+            --base main \
+            --head "$BRANCH" || true
