@@ -1,149 +1,30 @@
-name: Repo Agent (Codex) - Fix Build + PR
-
-on:
-  workflow_dispatch:
-    inputs:
-      instruction:
-        description: "Instrucción directa para el agente (si se deja vacío, usa AGENT_TASKS.md)"
-        required: false
-        type: string
-
-  push:
-    paths:
-      - "AGENT_TASKS.md"
-
-permissions:
-  contents: write
-  pull-requests: write
-
-concurrency:
-  group: repo-agent-${{ github.workflow }}-${{ github.run_id }}
-  cancel-in-progress: false
-
-
-jobs:
-  agent:
-    runs-on: ubuntu-latest
-
-    steps:
-      # ---------------------------
-      # Checkout con PAT
-      # ---------------------------
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GH_PAT }}
-
-      # ---------------------------
-      # Node.js
-      # ---------------------------
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      # ---------------------------
-      # Instalar dependencias
-      # ---------------------------
-      - name: Install dependencies
+      - name: Create agent branch + push (unique)
+        shell: bash
         run: |
-          set -e
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund
-          fi
+          set -euo pipefail
 
-      # ---------------------------
-      # Crear rama del agente
-      # ---------------------------
-      - name: Create agent branch
-        run: |
-          set -e
-BRANCH="agent/codex-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
-          git checkout -b "$BRANCH"
+          BRANCH="agent/codex-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
 
-      # ---------------------------
-      # Preparar instrucción
-      # ---------------------------
-      - name: Prepare agent instruction
-        run: |
-          set -e
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.instruction }}" ]; then
-            echo "${{ inputs.instruction }}" > /tmp/AGENT_INSTRUCTION.txt
-          else
-            if [ ! -f AGENT_TASKS.md ]; then
-              echo "ERROR: No existe AGENT_TASKS.md ni se pasó instrucción manual."
-              exit 1
-            fi
-            cp AGENT_TASKS.md /tmp/AGENT_INSTRUCTION.txt
-          fi
-
-      # ---------------------------
-      # EJECUTAR CODEX (CORRECTO)
-      # ---------------------------
-      - name: Run Codex Repo Agent
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: /tmp/AGENT_INSTRUCTION.txt
-          codex-home: ${{ github.workspace }}/.codex
-          sandbox: workspace-write
-          safety-strategy: drop-sudo
-
-      # ---------------------------
-      # Verificar conflictos Git
-      # ---------------------------
-      - name: Fail if conflict markers exist
-        run: |
-          set -e
-          if grep -RIn --exclude-dir=node_modules --exclude-dir=.git -E '^(<<<<<<<|=======|>>>>>>>)' .; then
-            echo "ERROR: Conflict markers detectados."
-            exit 1
-          fi
-
-      # ---------------------------
-      # Build obligatorio
-      # ---------------------------
-      - name: npm run build
-        run: |
-          set -e
-          npm run build
-
-      # ---------------------------
-      # Commit
-      # ---------------------------
-      - name: Commit changes
-        run: |
-          set -e
           git config user.name "repo-agent"
           git config user.email "repo-agent@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No hay cambios que commitear."
+
+          # crea rama nueva SIEMPRE (única por run+attempt)
+          git checkout -b "$BRANCH"
+
+          # commit solo si hay cambios
+          if git diff --quiet; then
+            echo "No changes to commit."
             exit 0
           fi
-          git commit -m "Agent: fix build (handleSubmit)"
 
-      # ---------------------------
-      # Push
-      # ---------------------------
-      - name: Push branch
-        run: |
-          git push -u origin "$BRANCH"
+          git add -A
+          git commit -m "fix: autofix build via agent"
 
-      # ---------------------------
-      # Crear PR
-      # ---------------------------
-      - name: Create Pull Request
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          gh pr create \
-            --title "Agent: fix build + handleSubmit" \
-            --body "PR automática del Repo-Agent (Codex). Build verificado y sin conflictos." \
-            --base main \
-            --head "$BRANCH" || true
+          # push seguro (si por cualquier razón existe, crea otra rama aún más única)
+          if ! git push -u origin "$BRANCH"; then
+            BRANCH="agent/codex-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}"
+            echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+            git checkout -b "$BRANCH"
+            git push -u origin "$BRANCH"
+          fi
