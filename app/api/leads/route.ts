@@ -1,157 +1,118 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import type { Role } from "@/lib/types";
 
-export const runtime = "nodejs";
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
-// Email simple (suficiente para landing)
-const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const supabase = createClient(
+  supabaseUrl,
+  // En server: preferimos service role si existe; si no, anon (para no romper build)
+  supabaseServiceKey || supabaseAnonKey
+);
 
-// Normaliza teléfono: deja dígitos y un "+" opcional al inicio
-function normalizePhone(input?: string | null): string | null {
-  if (!input) return null;
-  const trimmed = String(input).trim();
-  if (!trimmed) return null;
-
-  // Permite +, espacios, guiones, paréntesis y puntos en entrada, pero guarda normalizado
-  const hasPlus = trimmed.startsWith("+");
-  const digits = trimmed.replace(/[^\d]/g, "");
-  if (!digits) return null;
-
-  const normalized = (hasPlus ? "+" : "") + digits;
-
-  // Validación suave (no por país): evita basura extrema
-  // (si quieres aún más suave, quita estos límites)
-  if (digits.length < 6) return null;   // demasiado corto para ser útil
-  if (digits.length > 20) return null;  // demasiado largo
-  return normalized;
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
 }
 
-function json(status: number, body: Record<string, unknown>) {
-  return NextResponse.json(body, { status });
+function asString(v: unknown): string {
+  return typeof v === "string" ? v : "";
 }
 
-type LeadPayload = {
-  name?: string;
-  email?: string;
-  city?: string;
-  role?: string;
+function normalizePhoneToDigits(input: string): string {
+  const digits = input.replace(/[^\d]/g, "");
+  return digits;
+}
 
-  // teléfono puede llegar con distintos nombres según el front
-  phone?: string;
-  tel?: string;
-  wa?: string;
-  whatsapp?: string;
+function isValidEmail(email: string): boolean {
+  // Regla simple suficiente
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
 
-  // si añadiste “repite teléfono” en el front
-  phoneRepeat?: string;
-  telRepeat?: string;
-
-  // honeypot anti-bots
-  honeypot?: string;
-};
+function asRole(v: unknown): Role {
+  const s = asString(v);
+  if (s === "cocinero" || s === "cliente" || s === "admin") return s;
+  return "cliente";
+}
 
 export async function POST(req: Request) {
   try {
-    const payload = (await req.json()) as LeadPayload;
+    const bodyUnknown: unknown = await req.json();
 
-    // Honeypot: si viene relleno, fingimos OK para no dar pistas a bots
-    if (payload?.honeypot && String(payload.honeypot).trim().length > 0) {
-      return json(200, { ok: true, message: "Gracias, estás en la lista" });
+    if (!isRecord(bodyUnknown)) {
+      return NextResponse.json({ error: "Body inválido" }, { status: 400 });
     }
 
-    const name = (payload.name ?? "").trim() || null;
+    const name = asString(bodyUnknown.name).trim();
+    const email = asString(bodyUnknown.email).trim().toLowerCase();
+    const city = asString(bodyUnknown.city).trim();
+    const role = asRole(bodyUnknown.role);
 
-    const emailRaw = (payload.email ?? "").trim().toLowerCase();
-    if (!emailRaw || !emailRegex.test(emailRaw)) {
-      return json(400, { ok: false, error: "Email inválido" });
+    const phoneRaw = asString(bodyUnknown.phone).trim();
+    const phoneDigits = phoneRaw ? normalizePhoneToDigits(phoneRaw) : "";
+    const phone = phoneDigits ? phoneDigits : null;
+
+    if (!name || !email || !city) {
+      return NextResponse.json({ error: "Faltan campos obligatorios" }, { status: 400 });
+    }
+    if (!isValidEmail(email)) {
+      return NextResponse.json({ error: "Email inválido" }, { status: 400 });
+    }
+    if (phoneDigits && phoneDigits.length < 7) {
+      return NextResponse.json({ error: "Teléfono inválido" }, { status: 400 });
     }
 
-    const city = (payload.city ?? "").trim() || null;
-    const role = (payload.role ?? "").trim() || null;
+    // Duplicado por email
+    const { data: existingByEmail, error: qEmailErr } = await supabase
+      .from("leads")
+      .select("id")
+      .eq("email", email)
+      .limit(1);
 
-    // Soportamos varios alias que tu front pudo usar antes (wa/whatsapp/etc.)
-    const phoneInput =
-      payload.phone ?? payload.tel ?? payload.wa ?? payload.whatsapp ?? null;
-
-    const phone = normalizePhone(phoneInput);
-
-    // Si el usuario escribió algo pero no pasa validación suave -> error claro
-    if (phoneInput && String(phoneInput).trim() !== "" && !phone) {
-      return json(400, {
-        ok: false,
-        error: "Teléfono inválido",
-        hint: 'Puedes escribirlo con o sin "+", con espacios o guiones. No limitamos por país.',
-      });
+    if (qEmailErr) {
+      console.error("leads email check error:", qEmailErr);
+      return NextResponse.json({ error: "Error interno" }, { status: 500 });
     }
 
-    // Si existe “repite teléfono”, lo comparamos (solo si ambos vienen)
-    const phoneRepeatInput =
-      payload.phoneRepeat ?? payload.telRepeat ?? null;
+    if (existingByEmail && existingByEmail.length > 0) {
+      return NextResponse.json({ error: "Email ya registrado" }, { status: 409 });
+    }
 
-    if (phoneInput && phoneRepeatInput) {
-      const p1 = normalizePhone(phoneInput);
-      const p2 = normalizePhone(phoneRepeatInput);
-      if (!p1 || !p2) {
-        return json(400, { ok: false, error: "Teléfono inválido" });
+    // Duplicado por teléfono (solo si hay)
+    if (phone) {
+      const { data: existingByPhone, error: qPhoneErr } = await supabase
+        .from("leads")
+        .select("id")
+        .eq("phone", phone)
+        .limit(1);
+
+      if (qPhoneErr) {
+        console.error("leads phone check error:", qPhoneErr);
+        return NextResponse.json({ error: "Error interno" }, { status: 500 });
       }
-      if (p1 !== p2) {
-        return json(400, { ok: false, error: "Los teléfonos no coinciden" });
+
+      if (existingByPhone && existingByPhone.length > 0) {
+        return NextResponse.json({ error: "Teléfono ya registrado" }, { status: 409 });
       }
     }
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-    if (!supabaseUrl || !serviceRoleKey) {
-      console.error("[/api/leads] Missing env vars", {
-        hasUrl: !!supabaseUrl,
-        hasService: !!serviceRoleKey,
-      });
-      return json(500, { ok: false, error: "Servidor no configurado" });
-    }
-
-    const supabase = createClient(supabaseUrl, serviceRoleKey, {
-      auth: { persistSession: false },
-    });
-
-    // 👇 AQUÍ está el INSERT real (lo que pedías)
-    const { error } = await supabase.from("leads").insert({
+    const { error: insErr } = await supabase.from("leads").insert({
       name,
-      email: emailRaw,
+      email,
       city,
       role,
-      phone,           // guardamos teléfono normalizado (o null)
-      source: "landing",
+      phone,
     });
 
-    if (error) {
-      // Unique violation (email o phone normalmente)
-      // Postgres: 23505
-      const code = (error as any).code as string | undefined;
-      const msg = (error as any).message as string | undefined;
-
-      // Intentamos detectar si el duplicado fue email o phone por el texto del error/constraint
-      if (code === "23505") {
-        const text = `${msg ?? ""}`.toLowerCase();
-
-        if (text.includes("email")) {
-          return json(409, { ok: false, error: "Email ya registrado" });
-        }
-        if (text.includes("phone") || text.includes("tel")) {
-          return json(409, { ok: false, error: "Teléfono ya registrado" });
-        }
-
-        // Fallback si no podemos saber cuál
-        return json(409, { ok: false, error: "Dato ya registrado" });
-      }
-
-      console.error("[/api/leads] insert error:", error);
-      return json(500, { ok: false, error: "No se pudo guardar el lead" });
+    if (insErr) {
+      console.error("leads insert error:", insErr);
+      return NextResponse.json({ error: "Error interno" }, { status: 500 });
     }
 
-    return json(200, { ok: true, message: "Gracias, estás en la lista" });
-  } catch (e) {
-    console.error("[/api/leads] unexpected error:", e);
-    return json(500, { ok: false, error: "No se pudo guardar el lead" });
+    return NextResponse.json({ ok: true }, { status: 200 });
+  } catch (e: unknown) {
+    console.error("leads route fatal:", e);
+    return NextResponse.json({ error: "Error interno" }, { status: 500 });
   }
 }
