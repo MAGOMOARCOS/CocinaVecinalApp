@@ -5,12 +5,8 @@ import { supabase } from "@/lib/supabaseClient";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-/**
- * Tipado mínimo y explícito para el perfil
- * (evita any y satisface eslint)
- */
 type Profile = {
-  role: "cook" | "both" | "user" | null;
+  role: "cook" | "both" | "buyer" | null;
   city: string | null;
   neighborhood: string | null;
 };
@@ -47,13 +43,14 @@ function NewListingInner() {
         .eq("id", user.id)
         .maybeSingle<Profile>();
 
-      if (!profile || (profile.role !== "cook" && profile.role !== "both")) {
+      const role = profile?.role ?? null;
+      if (!role || (role !== "cook" && role !== "both")) {
         router.replace("/onboarding");
         return;
       }
 
-      setCity(profile.city ?? "");
-      setNeighborhood(profile.neighborhood ?? "");
+      setCity(profile?.city ?? "");
+      setNeighborhood(profile?.neighborhood ?? "");
     };
 
     void loadProfile();
@@ -96,9 +93,6 @@ function NewListingInner() {
   return (
     <div className="mx-auto max-w-xl rounded-3xl border border-neutral-200 p-6">
       <h1 className="text-xl font-semibold">Publicar un plato</h1>
-      <p className="mt-2 text-sm text-neutral-600">
-        MVP: solo barrio y ciudad. El punto exacto se concreta tras la reserva.
-      </p>
 
       <div className="mt-5 grid gap-4">
         <label className="block">
@@ -157,7 +151,7 @@ function NewListingInner() {
           </label>
 
           <label className="block">
-            <div className="text-sm font-medium">Barrio / Zona</div>
+            <div className="text-sm font-medium">Barrio</div>
             <input
               value={neighborhood}
               onChange={(e) => setNeighborhood(e.target.value)}
@@ -166,16 +160,16 @@ function NewListingInner() {
           </label>
         </div>
 
-        <div className="rounded-2xl border border-neutral-200 p-4 text-sm text-neutral-600">
-          Fotos: la subida a Storage se activa en el siguiente sprint.
-        </div>
-
-        {errorMsg && <div className="text-sm text-red-600">{errorMsg}</div>}
+        {errorMsg ? (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            {errorMsg}
+          </div>
+        ) : null}
 
         <button
-          onClick={create}
-          disabled={saving || !title || !city || !neighborhood}
-          className="rounded-xl bg-neutral-900 px-4 py-2 text-white hover:bg-neutral-800 disabled:opacity-60"
+          onClick={() => void create()}
+          disabled={saving || !title.trim() || !city.trim() || !neighborhood.trim()}
+          className="mt-2 rounded-xl bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
           {saving ? "Publicando…" : "Publicar"}
         </button>
