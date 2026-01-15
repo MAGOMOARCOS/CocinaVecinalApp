@@ -30,7 +30,7 @@ export default function Home() {
     const wa = String(fd.get('wa') || '').trim();
     const honeypot = String(fd.get('honeypot') || '').trim();
 
-    // Anti-bot simple
+    // Anti-bot simple (no mostramos nada, solo ignoramos)
     if (honeypot) return;
 
     // Validación mínima
@@ -51,24 +51,35 @@ export default function Home() {
       const response = await fetch('/api/leads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        // honeypot se puede enviar o no; lo dejamos por compatibilidad
         body: JSON.stringify({ name, email, city, role, wa, honeypot }),
       });
 
-      const data: LeadResponse | null = await response
-        .json()
-        .catch(() => null);
+      // Parse robusto (si algo raro pasa, data queda null)
+      let data: LeadResponse | null = null;
+      try {
+        data = (await response.json()) as LeadResponse;
+      } catch {
+        data = null;
+      }
 
-      const ok = Boolean(response.ok && data?.ok);
+      /**
+       * CLAVE:
+       * - Si la API devuelve 200 pero por lo que sea el JSON no trae ok,
+       *   consideramos éxito (response.ok) como suficiente.
+       */
+      const ok = response.ok && (data?.ok ?? true);
 
+      // Mensaje: prioriza message/error del API; si no hay, fallback razonable.
       const apiMessage =
         data?.message ||
         data?.error ||
         (!response.ok && response.statusText) ||
-        'No pudimos procesar tu solicitud';
+        (ok ? 'Gracias, estás en la lista' : 'No pudimos procesar tu solicitud');
 
       if (ok) {
         setError(null);
-        setMessage(apiMessage || 'Gracias, estás en la lista');
+        setMessage(apiMessage);
         e.currentTarget.reset();
       } else {
         setMessage(null);
