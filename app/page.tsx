@@ -21,7 +21,15 @@ export default function Home() {
     setMessage(null);
     setError(null);
 
-    const fd = new FormData(e.currentTarget);
+    // ✅ Fuerza validación nativa del navegador (type=email, required, etc.)
+    const form = e.currentTarget;
+    if (!form.reportValidity()) {
+      // el navegador ya mostrará el tooltip; nosotros ponemos un mensaje genérico
+      setError('Revisa los campos marcados (por ejemplo, el email).');
+      return;
+    }
+
+    const fd = new FormData(form);
 
     const name = String(fd.get('name') || '').trim();
     const email = String(fd.get('email') || '').trim();
@@ -30,10 +38,15 @@ export default function Home() {
     const wa = String(fd.get('wa') || '').trim();
     const honeypot = String(fd.get('honeypot') || '').trim();
 
-    // Anti-bot simple (no mostramos nada, solo ignoramos)
-    if (honeypot) return;
+    // Anti-bot: si viene relleno, ignoramos silenciosamente
+    if (honeypot) {
+      setMessage('Gracias, estás en la lista');
+      setError(null);
+      form.reset();
+      return;
+    }
 
-    // Validación mínima
+    // ✅ Validación adicional (mensaje claro)
     if (!name || !email) {
       setError('Nombre y email son requeridos');
       return;
@@ -51,43 +64,46 @@ export default function Home() {
       const response = await fetch('/api/leads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // honeypot se puede enviar o no; lo dejamos por compatibilidad
         body: JSON.stringify({ name, email, city, role, wa, honeypot }),
       });
 
-      // Parse robusto (si algo raro pasa, data queda null)
+      // ✅ Intentamos JSON, pero si falla, leemos texto
       let data: LeadResponse | null = null;
+      let rawText: string | null = null;
+
       try {
         data = (await response.json()) as LeadResponse;
       } catch {
-        data = null;
+        try {
+          rawText = await response.text();
+        } catch {
+          rawText = null;
+        }
       }
 
-      /**
-       * CLAVE:
-       * - Si la API devuelve 200 pero por lo que sea el JSON no trae ok,
-       *   consideramos éxito (response.ok) como suficiente.
-       */
+      // ✅ Éxito robusto: si 200 y no trae ok, lo damos por ok
       const ok = response.ok && (data?.ok ?? true);
-
-      // Mensaje: prioriza message/error del API; si no hay, fallback razonable.
-      const apiMessage =
-        data?.message ||
-        data?.error ||
-        (!response.ok && response.statusText) ||
-        (ok ? 'Gracias, estás en la lista' : 'No pudimos procesar tu solicitud');
 
       if (ok) {
         setError(null);
-        setMessage(apiMessage);
-        e.currentTarget.reset();
-      } else {
-        setMessage(null);
-        setError(apiMessage);
+        setMessage(data?.message ?? 'Gracias, estás en la lista');
+        form.reset();
+        return;
       }
-    } catch {
+
+      // ❌ Error real (no genérico)
+      const errMsg =
+        data?.error ??
+        data?.message ??
+        rawText ??
+        `Error al enviar el formulario (${response.status})`;
+
       setMessage(null);
-      setError('Error al enviar el formulario');
+      setError(errMsg);
+    } catch (err: any) {
+      // ❌ Error de red / JS
+      setMessage(null);
+      setError(err?.message ? `Error de red: ${err.message}` : 'Error al enviar el formulario');
     } finally {
       setIsSubmitting(false);
     }
@@ -120,10 +136,13 @@ export default function Home() {
         .ghost{background:transparent;border:1px solid rgba(255,255,255,.18);color:var(--txt)}
         label{display:block;font-weight:700;margin:10px 0 6px}
         input,select{width:100%;padding:12px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.14);background:#0f1118;color:var(--txt);outline:none}
+        /* ✅ Para que el email largo se vea mejor */
+        input[type="email"]{font-variant-ligatures:none}
         .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
         @media(max-width:860px){.row{grid-template-columns:1fr}}
         .small{font-size:12px;color:var(--muted);margin-top:10px}
         .ok{margin-top:10px;padding:10px 12px;border-radius:12px;background:rgba(57,217,138,.12);border:1px solid rgba(57,217,138,.35);color:var(--ok);font-weight:800}
+        .err{margin-top:10px;color:#ff4d4d;font-weight:800}
         footer{margin-top:18px;color:var(--muted);font-size:12px}
         .links{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}
         .links a{opacity:.9}
@@ -187,7 +206,18 @@ export default function Home() {
                 </div>
                 <div>
                   <label>Email</label>
-                  <input name="email" type="email" required placeholder="tu@email.com" />
+                  <input
+                    name="email"
+                    type="email"
+                    required
+                    placeholder="tu@email.com"
+                    onInvalid={(ev) => {
+                      (ev.target as HTMLInputElement).setCustomValidity('Email inválido');
+                    }}
+                    onInput={(ev) => {
+                      (ev.target as HTMLInputElement).setCustomValidity('');
+                    }}
+                  />
                 </div>
               </div>
 
@@ -218,7 +248,7 @@ export default function Home() {
               </div>
 
               {message && <div className="ok">{message}</div>}
-              {error && <div style={{ color: 'red', marginTop: 10 }}>{error}</div>}
+              {error && <div className="err">{error}</div>}
 
               <div className="small">Tus datos se guardarán de forma segura.</div>
             </form>
