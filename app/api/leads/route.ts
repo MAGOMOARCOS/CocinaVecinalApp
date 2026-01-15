@@ -10,96 +10,104 @@ type LeadPayload = {
   email?: string;
   city?: string;
   role?: string;
-
-  // frontend puede mandar cualquiera de estos:
-  wa?: string;
-  whatsapp?: string;
-  phone?: string;
-
+  wa?: string; // WhatsApp (frontend)
   honeypot?: string;
 
-  // alias “por si acaso” (no existe columna en tabla, se ignora)
+  // aliases por si el frontend cambia nombres
+  whatsapp?: string;
+  phone?: string;
   interest?: string;
 };
 
+function json(status: number, body: any) {
+  return NextResponse.json(body, { status });
+}
+
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as LeadPayload;
+    const SUPABASE_URL =
+      process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+    const SERVICE_ROLE =
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_SERVICE_ROLE ||
+      process.env.SUPABASE_SERVICE_KEY;
 
-    // Honeypot anti-bots: si viene relleno, fingimos OK sin guardar.
-    if (body.honeypot && body.honeypot.trim().length > 0) {
-      return NextResponse.json({ ok: true, message: "OK" }, { status: 200 });
-    }
-
-    const email = (body.email ?? "").trim().toLowerCase();
-    if (!email || !emailRegex.test(email)) {
-      return NextResponse.json(
-        { ok: false, error: "Email inválido" },
-        { status: 400 }
-      );
-    }
-
-    const name = (body.name ?? "").trim() || null;
-    const city = (body.city ?? "").trim() || null;
-    const role = (body.role ?? "").trim() || null;
-
-    // NORMALIZACIÓN: WhatsApp / phone (lo guardamos en columna 'phone')
-    const phone =
-      (body.wa ?? body.whatsapp ?? body.phone ?? "").trim() || null;
-
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-    if (!supabaseUrl || !serviceKey) {
-      console.error("[/api/leads] Missing env vars", {
-        hasUrl: Boolean(supabaseUrl),
-        hasServiceKey: Boolean(serviceKey),
+    if (!SUPABASE_URL || !SERVICE_ROLE) {
+      return json(500, {
+        ok: false,
+        error:
+          "Faltan variables de entorno de Supabase (URL o SERVICE_ROLE_KEY).",
       });
-      return NextResponse.json(
-        { ok: false, error: "Configuración incompleta del servidor" },
-        { status: 500 }
-      );
     }
 
-    const supabase = createClient(supabaseUrl, anonKey, {
-  auth: { persistSession: false },
-});
+    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
+      auth: { persistSession: false },
+    });
 
-    
-    // IMPORTANTE: insertar SOLO columnas reales de la tabla 'leads'
-    // y usar UPSERT por email para que pruebas repetidas no fallen.
-    const { error } = await supabase
-      .from("leads")
-      .upsert(
-        {
-          email,          // NOT NULL
-          name,
-          city,
-          role,
-          phone,          // columna REAL en tabla
-          source: "landing",
-          // message es nullable: no hace falta
-        },
-        { onConflict: "email" }
-      );
+    let payload: LeadPayload | null = null;
+    try {
+      payload = (await req.json()) as LeadPayload;
+    } catch {
+      return json(400, { ok: false, error: "Body JSON inválido." });
+    }
+
+    const name = String(payload?.name ?? "").trim();
+    const email = String(payload?.email ?? "").trim();
+    const city = String(payload?.city ?? "").trim() || "Medellín";
+
+    // role puede venir como role o interest
+    const role = String(payload?.role ?? payload?.interest ?? "Ambos").trim();
+
+    // WhatsApp puede venir como wa / whatsapp / phone
+    const phone = String(payload?.wa ?? payload?.whatsapp ?? payload?.phone ?? "")
+      .trim();
+
+    const honeypot = String(payload?.honeypot ?? "").trim();
+
+    // Anti-bot: si honeypot viene relleno, respondemos ok sin guardar.
+    if (honeypot) {
+      return json(200, { ok: true, message: "Gracias, estás en la lista" });
+    }
+
+    if (!name || !email) {
+      return json(400, { ok: false, error: "Nombre y email son requeridos." });
+    }
+
+    if (!emailRegex.test(email)) {
+      return json(400, { ok: false, error: "Email inválido." });
+    }
+
+    // Inserción: ajusta nombres a tu tabla real (según tu captura: email, name, city, role, phone, source)
+    const { error } = await supabase.from("leads").insert({
+      name,
+      email,
+      city,
+      role,
+      phone: phone || null,
+      source: "landing",
+    });
 
     if (error) {
-      console.error("[/api/leads] supabase upsert error:", error);
-      return NextResponse.json(
-        { ok: false, error: "No se pudo guardar el lead" },
-        { status: 500 }
-      );
+      // Si tienes unique constraint en email, normalmente será 23505
+      const code = (error as any).code;
+      if (code === "23505") {
+        return json(200, {
+          ok: true,
+          message: "Ya estabas en la lista 🙂",
+        });
+      }
+
+      return json(500, {
+        ok: false,
+        error: `Supabase insert error: ${error.message}`,
+      });
     }
 
-    return NextResponse.json(
-      { ok: true, message: "Gracias, estás en la lista" },
-      { status: 200 }
-    );
-  } catch (e) {
-    console.error("[/api/leads] unexpected error:", e);
-    return NextResponse.json(
-      { ok: false, error: "No se pudo guardar el lead" },
-      { status: 500 }
-    );
+    return json(200, { ok: true, message: "Gracias, estás en la lista" });
+  } catch (e: any) {
+    return json(500, {
+      ok: false,
+      error: e?.message ? `Error servidor: ${e.message}` : "Error servidor.",
+    });
   }
 }
