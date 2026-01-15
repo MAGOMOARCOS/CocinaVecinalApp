@@ -90,9 +90,8 @@ export default function OrdersPage() {
     setLoading(false);
   }, []);
 
-  // ✅ Evita el warning "set-state-in-effect":
-  // No llamamos a refresh() directamente dentro del cuerpo síncrono del efecto.
-  // Lo diferimos a la siguiente vuelta del event loop.
+  // ✅ Evita el error de lint: react-hooks/set-state-in-effect
+  // Diferimos la llamada para que no sea "setState synchronously within an effect".
   useEffect(() => {
     const t = window.setTimeout(() => {
       void refresh();
