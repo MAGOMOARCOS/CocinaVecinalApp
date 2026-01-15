@@ -1,3 +1,21 @@
+OBJETIVO PRIORITARIO (NO DIVAGAR):
+
+1. Arreglar definitivamente app/page.tsx para que:
+   - npm run build pase en Vercel
+   - no haya errores de “Expected a semicolon”
+   - handleSubmit tenga try/catch/finally bien cerrados
+
+2. Verificar localmente con npm run build.
+
+3. Si hay cambios:
+   - crear rama agent/codex-*
+   - commit
+   - abrir Pull Request automáticamente.
+
+No modificar agent.yml.
+No tocar otros archivos si no es estrictamente necesario.
+
+
 ## TAREA PRIORITARIA (BUILD ESTABLE)
 1) Ejecuta `npm install` para regenerar/actualizar `package-lock.json` y dejarlo 100% sincronizado con `package.json`.
 2) Asegura que `npm run build` pasa en limpio.

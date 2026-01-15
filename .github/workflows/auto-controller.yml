@@ -1,0 +1,50 @@
+name: AutoController (CocinaVecinal)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  actions: write
+
+concurrency:
+  group: autocontroller
+  cancel-in-progress: false
+
+jobs:
+  controller:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run controller
+        env:
+          # ✅ Usa el token interno correcto (este SIEMPRE existe)
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # OpenAI
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-4o-mini
+
+          # Issue de control
+          ISSUE_NUMBER: "2"
+
+          # Workflow del agente
+          AGENT_WORKFLOW_FILE: "agent.yml"
+
+          # Control de cadencia
+          MIN_INTERVAL_MINUTES: "12"
+          MAX_COMMENTS: "18"
+        run: |
+          python3 --version
+          python3 scripts/agent_controller.py

@@ -45,13 +45,16 @@ export default function Home() {
         body: JSON.stringify({ name, email, city, interest, whatsapp, honeypot }),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => null);
+      const apiMessage =
+        (data as { message?: string })?.message ||
+        'No pudimos procesar tu solicitud';
 
-      if (response.ok) {
-        setMessage(data.message || '¡Listo! Te avisaremos cuando lancemos en Medellín.');
+      if ((data as { ok?: boolean })?.ok) {
+        setMessage(apiMessage);
         e.currentTarget.reset();
       } else {
-        setError(data.error || 'No pudimos guardar tus datos. Intenta de nuevo.');
+        setError(apiMessage);
       }
     } catch (err) {
       setError('Error al enviar el formulario');
