@@ -80,3 +80,38 @@ Haz commits en esta rama hasta dejar `npm run build` en verde. Cambios mínimos.
 ### 5) Build y deploy
 - Ejecutar `npm ci` y `npm run build`.
 - Si compila, abrir PR con cambios y descripción breve del fix.
+## NEXT (ejecutar)
+
+@codex
+1) Verifica que la landing funciona end-to-end en producción:
+   - envío OK → inserta en Supabase
+   - email duplicado → mensaje “Email ya registrado”
+   - teléfono duplicado → mensaje “Teléfono ya registrado”
+   - email inválido → error claro (no envía)
+   - teléfono y “repite teléfono” no coinciden → error claro (no envía)
+
+2) Limpieza UI/estado en app/page.tsx:
+   - Garantiza que NUNCA se muestren a la vez success y error (mutuamente excluyentes).
+   - Unifica el manejo de errores (un solo punto donde se decide el mensaje).
+   - Tras success: opcionalmente limpia campos (excepto ciudad/rol si quieres mantenerlos).
+
+3) Validación de teléfono:
+   - Teléfono es opcional.
+   - Si se rellena, exigir “repite teléfono” y que coincida.
+   - Aceptar +, espacios, guiones y números; normalizar a solo dígitos para comparar/guardar.
+   - No imponer longitud por país (solo un mínimo razonable: >= 7 dígitos).
+
+4) Backend /api/leads (route.ts):
+   - Asegura insert explícito con los campos actuales: name, email, city, role, phone
+   - Normaliza phone en backend igual que en frontend.
+   - Maneja duplicados devolviendo status 409 y mensaje exacto:
+       - “Email ya registrado”
+       - “Teléfono ya registrado”
+   - Log interno (console.error) pero NO filtrar secretos.
+
+5) Repo hygiene:
+   - Elimina/evita duplicados tipo page.tsx fuera de /app si existen y no se usan.
+   - Asegura que `npm run build` pasa en GitHub Actions y en Vercel.
+
+Entrega:
+- PR con cambios + checklist en el PR description de las pruebas anteriores.
