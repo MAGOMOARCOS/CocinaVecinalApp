@@ -41,7 +41,7 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-       name: Preflight (FREE): install + build
+      - name: Preflight (FREE): install + build
         id: pf
         shell: bash
         run: |
