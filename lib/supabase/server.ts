@@ -2,7 +2,6 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 
 export async function createSupabaseServerClient() {
-  // ✅ cookies() puede ser async según versión/types
   const cookieStore = await cookies();
 
   type CookieToSet = {
@@ -25,7 +24,7 @@ export async function createSupabaseServerClient() {
               cookieStore.set(name, value, options);
             });
           } catch {
-            // En Server Components a veces no deja setear; OK, middleware/proxy lo cubre
+            // en Server Components a veces no deja setear; ok, middleware/proxy lo cubre
           }
         },
       },
