@@ -1,332 +1,384 @@
 "use client";
 
-import React, { useMemo, useRef, useState } from "react";
+import { useRef, useState, type FormEvent } from "react";
 
-type ApiResponse =
-  | { ok: true; message: string }
-  | { ok: false; error: string };
+type LeadResponse = { ok?: boolean; message?: string; error?: string };
 
-const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-// Teléfono: permitimos +, espacios, guiones, paréntesis.
-// Validamos por cantidad mínima de dígitos para evitar basura.
-// NO limitamos por país.
-function phoneDigitsCount(phone: string): number {
-  return phone.replace(/[^\d]/g, "").length;
+function normalizePhone(v: string) {
+  if (!v) return "";
+  // Mantiene dígitos y "+"; elimina espacios, guiones, etc.
+  return v.trim().replace(/[^\d+]/g, "").slice(0, 32);
 }
 
-function normalizeTrim(v: string): string {
-  return v.trim().replace(/\s+/g, " ");
+function digitsCount(v: string) {
+  return v.replace(/\D/g, "").length;
 }
 
-export default function Page() {
+export default function Home() {
   const formRef = useRef<HTMLDivElement | null>(null);
 
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [city, setCity] = useState("Medellín");
-  const [role, setRole] = useState("Ambos");
-
-  // Teléfono (opcional) + confirmación
-  const [phone, setPhone] = useState("");
-  const [phone2, setPhone2] = useState("");
-
-  // Estado UI
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Honeypot (anti-bots)
-  const [honey, setHoney] = useState("");
-
-  const validationError = useMemo(() => {
-    const n = normalizeTrim(name);
-    const e = email.trim();
-    const c = normalizeTrim(city);
-
-    if (n.length > 0 && n.length < 2) return "Nombre demasiado corto";
-    if (!e) return "Email requerido";
-    if (!emailRegex.test(e)) return "Email inválido";
-    if (!c) return "Ciudad requerida";
-
-    const p = phone.trim();
-    const p2 = phone2.trim();
-
-    // Si NO hay teléfono: ok (no pedimos confirmación)
-    if (!p) return null;
-
-    // Si hay teléfono: pedimos confirmación y validamos mínimo de dígitos
-    const digits = phoneDigitsCount(p);
-    if (digits < 7) return "Teléfono inválido (demasiado corto)";
-    if (!p2) return "Repite teléfono";
-    if (p2 !== p) return "Los teléfonos no coinciden";
-
-    // Si hay confirmación, validamos también que no sea basura
-    const digits2 = phoneDigitsCount(p2);
-    if (digits2 < 7) return "Teléfono inválido (demasiado corto)";
-
-    return null;
-  }, [name, email, city, phone, phone2]);
-
-  function clearFeedback() {
-    setMessage(null);
+  function setOk(msg: string) {
     setError(null);
+    setMessage(msg);
   }
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    clearFeedback();
+  function setErr(msg: string) {
+    setMessage(null);
+    setError(msg);
+  }
 
-    const vErr = validationError;
-    if (vErr) {
-      setError(vErr);
+  function scrollToForm() {
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (isSubmitting) return;
+
+    setMessage(null);
+    setError(null);
+
+    const form = e.currentTarget;
+
+    // Validación HTML5 básica
+    if (!form.reportValidity()) {
+      setErr("Revisa los campos marcados.");
       return;
+    }
+
+    const fd = new FormData(form);
+
+    const name = String(fd.get("name") || "").trim();
+    const email = String(fd.get("email") || "").trim();
+    const city = (String(fd.get("city") || "").trim() || "Medellín").trim();
+    const role = String(fd.get("role") || "Ambos");
+
+    const phone1 = normalizePhone(String(fd.get("phone") || ""));
+    const phone2 = normalizePhone(String(fd.get("phone2") || ""));
+
+    const honeypot = String(fd.get("honeypot") || "").trim();
+
+    // Anti-bot silencioso
+    if (honeypot) {
+      setOk("Gracias, estás en la lista");
+      form.reset();
+      return;
+    }
+
+    // Validaciones claras
+    if (!name || !email) {
+      setErr("Nombre y email son obligatorios");
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      setErr("Email inválido");
+      return;
+    }
+
+    // Teléfono: opcional, pero si se usa → doble confirmación
+    if (phone1 || phone2) {
+      if (!phone1 || !phone2) {
+        setErr("Repite el teléfono para confirmarlo");
+        return;
+      }
+      if (phone1 !== phone2) {
+        setErr("Los teléfonos no coinciden");
+        return;
+      }
+      if (digitsCount(phone1) < 7) {
+        setErr("Teléfono inválido");
+        return;
+      }
     }
 
     setIsSubmitting(true);
 
     try {
-      const payload = {
-        name: normalizeTrim(name) || null,
-        email: email.trim(),
-        city: normalizeTrim(city) || null,
-        role,
-        phone: phone.trim() || null,
-        phone2: phone2.trim() || null, // el server puede ignorarlo; lo mando por robustez
-        honey, // honeypot
-      };
-
-      const resp = await fetch("/api/leads", {
+      const response = await fetch("/api/leads", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          name,
+          email,
+          city,
+          role,
+          phone: phone1 || null,
+          honeypot,
+        }),
       });
 
-      const data = (await resp.json()) as ApiResponse;
+      let data: LeadResponse | null = null;
+      try {
+        data = (await response.json()) as LeadResponse;
+      } catch {
+        data = null;
+      }
 
-      if (!resp.ok || !data.ok) {
-        const msg = !data.ok ? data.error : "No se pudo guardar el lead";
-        setMessage(null);
-        setError(msg);
+      if (response.ok && (data?.ok ?? true)) {
+        setOk(data?.message ?? "Gracias, estás en la lista");
+        form.reset();
         return;
       }
 
-      // OK
-      setError(null);
-      setMessage(data.message || "Gracias, estás en la lista");
-
-      // opcional: limpiar campos (email lo puedes dejar si prefieres)
-      // setName("");
-      // setEmail("");
-      // setCity("Medellín");
-      // setRole("Ambos");
-      // setPhone("");
-      // setPhone2("");
-      // setHoney("");
-    } catch (err) {
-      setMessage(null);
-      setError("Error al enviar el formulario");
+      setErr(data?.error ?? "Error al enviar el formulario");
+    } catch {
+      setErr("Error al enviar el formulario");
     } finally {
       setIsSubmitting(false);
     }
   }
 
-  function scrollToForm() {
-    formRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-
   return (
-    <main className="min-h-screen bg-black text-white">
-      {/* Top bar */}
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
-        <div className="flex items-center gap-3">
-          <div className="h-12 w-12 rounded-2xl bg-orange-500/90 text-black font-bold grid place-items-center">
-            cv
-          </div>
-          <div className="leading-tight">
-            <div className="text-lg font-semibold">Cocina Vecinal</div>
-            <div className="text-sm text-white/70">
-              Comida casera entre vecinos — Medellín primero
-            </div>
-          </div>
+    <>
+      <style jsx global>{`
+        :root {
+          --bg: #0b0c10;
+          --card: #12141b;
+          --txt: #e9eefb;
+          --muted: #aab3c5;
+          --acc: #ff8a00;
+          --ok: #39d98a;
+          --err: #ff4d4d;
+          --border: rgba(255, 255, 255, 0.12);
+        }
+        * {
+          box-sizing: border-box;
+        }
+        body {
+          margin: 0;
+          font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+          background: var(--bg);
+          color: var(--txt);
+        }
+        .wrap {
+          max-width: 980px;
+          margin: 0 auto;
+          padding: 28px 18px 60px;
+        }
+        .top {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+        }
+        .logo {
+          width: 42px;
+          height: 42px;
+          border-radius: 12px;
+          background: var(--acc);
+          display: grid;
+          place-items: center;
+          color: #111;
+          font-weight: 900;
+        }
+        .hero {
+          margin-top: 18px;
+          display: grid;
+          grid-template-columns: 1.25fr 0.75fr;
+          gap: 16px;
+        }
+        @media (max-width: 860px) {
+          .hero {
+            grid-template-columns: 1fr;
+          }
+        }
+        .card {
+          background: var(--card);
+          border-radius: 18px;
+          padding: 18px;
+          border: 1px solid var(--border);
+        }
+        .title {
+          font-size: 34px;
+          line-height: 1.05;
+          margin: 0 0 10px 0;
+        }
+        .muted {
+          color: var(--muted);
+        }
+        .grid3 {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 10px;
+          margin-top: 14px;
+        }
+        @media (max-width: 860px) {
+          .grid3 {
+            grid-template-columns: 1fr;
+          }
+        }
+        .mini {
+          border: 1px solid var(--border);
+          border-radius: 14px;
+          padding: 12px;
+          background: rgba(255, 255, 255, 0.03);
+        }
+        label {
+          display: block;
+          font-weight: 700;
+          margin: 10px 0 6px;
+        }
+        input,
+        select {
+          width: 100%;
+          padding: 12px;
+          border-radius: 12px;
+          border: 1px solid #333;
+          background: #0f1118;
+          color: var(--txt);
+          outline: none;
+        }
+        input:focus,
+        select:focus {
+          border-color: rgba(255, 138, 0, 0.7);
+        }
+        .row {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+        }
+        @media (max-width: 860px) {
+          .row {
+            grid-template-columns: 1fr;
+          }
+        }
+        .primary {
+          background: var(--acc);
+          border: 0;
+          border-radius: 12px;
+          padding: 12px 14px;
+          font-weight: 900;
+          cursor: pointer;
+          color: #111;
+          width: 100%;
+          margin-top: 10px;
+        }
+        .primary:disabled {
+          opacity: 0.65;
+          cursor: not-allowed;
+        }
+        .ok {
+          margin-top: 12px;
+          color: var(--ok);
+          font-weight: 900;
+        }
+        .err {
+          margin-top: 12px;
+          color: var(--err);
+          font-weight: 900;
+        }
+        .btn {
+          background: var(--acc);
+          border: 0;
+          border-radius: 12px;
+          padding: 10px 12px;
+          font-weight: 900;
+          cursor: pointer;
+          color: #111;
+          white-space: nowrap;
+        }
+      `}</style>
+
+      <div className="wrap">
+        <div className="top">
+          <div className="logo">CV</div>
+          <button className="btn" onClick={scrollToForm}>
+            Unirme a la lista
+          </button>
         </div>
 
-        <button
-          onClick={scrollToForm}
-          className="rounded-2xl bg-orange-500 px-5 py-3 font-semibold text-black hover:bg-orange-400 transition"
-        >
-          Unirme a la lista
-        </button>
+        <div className="hero">
+          {/* IZQUIERDA */}
+          <div className="card">
+            <h1 className="title">Cocina Vecinal</h1>
+            <p className="muted">
+              Comida casera entre vecinos — Medellín primero. Si cocinas, puedes vender. Si no, puedes pedir.
+            </p>
+
+            <div className="grid3">
+              <div className="mini">
+                <strong>Recogida</strong>
+                <div className="muted" style={{ marginTop: 6 }}>
+                  Quedas con tu vecino y recoges.
+                </div>
+              </div>
+              <div className="mini">
+                <strong>Entrega</strong>
+                <div className="muted" style={{ marginTop: 6 }}>
+                  El cocinero entrega (tarifa por tramos).
+                </div>
+              </div>
+              <div className="mini">
+                <strong>Comer en casa</strong>
+                <div className="muted" style={{ marginTop: 6 }}>
+                  Opción anfitrión (si se habilita).
+                </div>
+              </div>
+            </div>
+
+            <p className="muted" style={{ marginTop: 14 }}>
+              Esta landing es temporal para captación. Te avisamos al abrir. Sin spam.
+            </p>
+          </div>
+
+          {/* DERECHA */}
+          <div className="card" ref={formRef}>
+            <form onSubmit={handleSubmit}>
+              <div className="row">
+                <div>
+                  <label>Nombre</label>
+                  <input name="name" required />
+                </div>
+                <div>
+                  <label>Email</label>
+                  <input name="email" type="email" required />
+                </div>
+              </div>
+
+              <div className="row">
+                <div>
+                  <label>Ciudad</label>
+                  <input name="city" placeholder="Medellín" />
+                </div>
+                <div>
+                  <label>Me interesa como</label>
+                  <select name="role" defaultValue="Ambos">
+                    <option value="Consumidor">Consumidor</option>
+                    <option value="Cocinero">Cocinero</option>
+                    <option value="Ambos">Ambos</option>
+                  </select>
+                </div>
+              </div>
+
+              <label>Teléfono (opcional)</label>
+              <input name="phone" placeholder="+57 300..." inputMode="tel" />
+
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                Si lo pones, repítelo igual para evitar errores. No limitamos por país.
+              </div>
+
+              <label>Repite teléfono</label>
+              <input name="phone2" placeholder="+57 300..." inputMode="tel" />
+
+              <input name="honeypot" style={{ display: "none" }} />
+
+              <button className="primary" type="submit" disabled={isSubmitting}>
+                {isSubmitting ? "Enviando..." : "Apuntarme"}
+              </button>
+
+              {/* SOLO uno visible */}
+              {message && !error && <div className="ok">{message}</div>}
+              {error && <div className="err">{error}</div>}
+            </form>
+          </div>
+        </div>
       </div>
-
-      {/* Content */}
-      <div className="mx-auto grid max-w-6xl grid-cols-1 gap-8 px-6 pb-16 lg:grid-cols-2">
-        {/* Left side */}
-        <section className="rounded-3xl bg-white/5 p-8 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]">
-          <h1 className="text-4xl font-semibold leading-tight">
-            Si cocinas en casa, puedes vender. Si no te apetece cocinar, puedes pedir.
-          </h1>
-
-          <p className="mt-5 text-white/75">
-            Cocina Vecinal conecta <span className="font-semibold text-white">cocinas caseras</span> con vecinos
-            que quieren <span className="font-semibold text-white">comida asequible y real</span>. Cada persona
-            puede ser <span className="font-semibold text-white">oferta y demanda</span> según el día.
-          </p>
-
-          <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <div className="rounded-2xl bg-white/5 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]">
-              <div className="text-lg font-semibold">Recogida</div>
-              <div className="mt-2 text-sm text-white/70">Quedas con tu vecino y recoges.</div>
-            </div>
-
-            <div className="rounded-2xl bg-white/5 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]">
-              <div className="text-lg font-semibold">Entrega</div>
-              <div className="mt-2 text-sm text-white/70">El cocinero entrega (tarifa por tramos).</div>
-            </div>
-
-            <div className="rounded-2xl bg-white/5 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]">
-              <div className="text-lg font-semibold">Comer en casa</div>
-              <div className="mt-2 text-sm text-white/70">
-                Opción “anfitrión” (si el cocinero la habilita).
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-10 flex flex-wrap gap-3">
-            <button
-              onClick={scrollToForm}
-              className="rounded-2xl bg-orange-500 px-6 py-4 font-semibold text-black hover:bg-orange-400 transition"
-            >
-              Unirme a la lista de espera
-            </button>
-
-            <a
-              href="mailto:info@cocinavecinal.com"
-              className="rounded-2xl bg-white/5 px-6 py-4 font-semibold text-white/90 shadow-[0_0_0_1px_rgba(255,255,255,0.06)] hover:bg-white/10 transition"
-            >
-              Contactar
-            </a>
-          </div>
-
-          <div className="mt-6 text-sm text-white/60">
-            Nota: esta es una página temporal para captación y validación.
-            <br />
-            info@cocinavecinal.com
-          </div>
-        </section>
-
-        {/* Right side: form */}
-        <section
-          ref={formRef}
-          className="rounded-3xl bg-white/5 p-8 shadow-[0_0_0_1px_rgba(255,255,255,0.06)]"
-        >
-          <div className="text-sm text-white/70">Únete a la lista de espera</div>
-          <div className="mt-1 text-white/70 text-sm">Te avisaremos cuando abramos en Medellín. (Sin spam)</div>
-
-          <form onSubmit={onSubmit} className="mt-6 space-y-5">
-            {/* Honeypot hidden */}
-            <input
-              value={honey}
-              onChange={(e) => setHoney(e.target.value)}
-              autoComplete="off"
-              tabIndex={-1}
-              className="hidden"
-              aria-hidden="true"
-            />
-
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div>
-                <label className="block text-sm font-semibold">Nombre</label>
-                <input
-                  value={name}
-                  onChange={(e) => {
-                    setName(e.target.value);
-                    // Limpieza suave: si había error de validación, lo borramos al tocar
-                    if (error) setError(null);
-                    if (message) setMessage(null);
-                  }}
-                  placeholder="Tu nombre"
-                  className="mt-2 w-full rounded-2xl bg-black/40 px-4 py-3 text-white outline-none shadow-[0_0_0_1px_rgba(255,255,255,0.10)] focus:shadow-[0_0_0_2px_rgba(249,115,22,0.70)]"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-semibold">Email</label>
-                <input
-                  value={email}
-                  onChange={(e) => {
-                    setEmail(e.target.value);
-                    if (error) setError(null);
-                    if (message) setMessage(null);
-                  }}
-                  placeholder="tu@email.com"
-                  className="mt-2 w-full rounded-2xl bg-black/40 px-4 py-3 text-white outline-none shadow-[0_0_0_1px_rgba(255,255,255,0.10)] focus:shadow-[0_0_0_2px_rgba(249,115,22,0.70)]"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div>
-                <label className="block text-sm font-semibold">Ciudad</label>
-                <input
-                  value={city}
-                  onChange={(e) => {
-                    setCity(e.target.value);
-                    if (error) setError(null);
-                    if (message) setMessage(null);
-                  }}
-                  placeholder="Medellín"
-                  className="mt-2 w-full rounded-2xl bg-black/40 px-4 py-3 text-white outline-none shadow-[0_0_0_1px_rgba(255,255,255,0.10)] focus:shadow-[0_0_0_2px_rgba(249,115,22,0.70)]"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-semibold">Me interesa como</label>
-                <select
-                  value={role}
-                  onChange={(e) => {
-                    setRole(e.target.value);
-                    if (error) setError(null);
-                    if (message) setMessage(null);
-                  }}
-                  className="mt-2 w-full rounded-2xl bg-black/40 px-4 py-3 text-white outline-none shadow-[0_0_0_1px_rgba(255,255,255,0.10)] focus:shadow-[0_0_0_2px_rgba(249,115,22,0.70)]"
-                >
-                  <option value="Ambos">Ambos</option>
-                  <option value="Cocinero">Cocinero</option>
-                  <option value="Comprador">Comprador</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-semibold">Teléfono (opcional)</label>
-              <input
-                value={phone}
-                onChange={(e) => {
-                  setPhone(e.target.value);
-                  if (error) setError(null);
-                  if (message) setMessage(null);
-                }}
-                placeholder="+57 300..."
-                className="mt-2 w-full rounded-2xl bg-black/40 px-4 py-3 text-white outline-none shadow-[0_0_0_1px_rgba(255,255,255,0.10)] focus:shadow-[0_0_0_2px_rgba(249,115,22,0.70)]"
-              />
-              <div className="mt-2 text-xs text-white/60">
-                Puedes escribirlo con o sin “+”, con espacios o guiones. No limitamos por país.
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-semibold">Repite teléfono</label>
-              <input
-                value={phone2}
-                onChange={(e) => {
-                  setPhone2(e.target.value);
-                  if (error) setError(null);
-                  if (message) setMessage(null);
-                }}
-                placeholder="+57 300..."
-                className="mt-2 w-full rounded-2xl bg-black/40 px-4 py-3 text-white outline-none shadow-[0_0_0_1px_rgba(255,255,255,0.10)] focus:shadow-[0_0_0_2px_rgba(249,115,22,0.70)]"
-              />
-<div className="mt-2 text-xs text-white/60">
-  Si no pones teléfono, este campo se ignora. Si lo pones, debe coincidir.
-</div>
+    </>
+  );
+}
