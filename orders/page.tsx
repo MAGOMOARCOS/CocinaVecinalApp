@@ -1,145 +1,211 @@
 "use client";
 
-import RequireAuth from "@/components/RequireAuth";
-import { supabase } from "@/lib/supabaseClient";
-import type { Order, Listing } from "@/lib/types";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
 
-function money(cents: number, currency: string) {
-  const value = cents / 100;
-  return new Intl.NumberFormat("es-CO", { style: "currency", currency }).format(value);
+// Ajusta si tu proyecto usa otro helper; aquí uso supabase-js directo para evitar imports rotos.
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+
+const supabase =
+  supabaseUrl && supabaseAnonKey
+    ? createClient(supabaseUrl, supabaseAnonKey)
+    : null;
+
+type OrderStatus = "pending" | "accepted" | "rejected" | "completed";
+
+type OrderRow = {
+  id: string;
+  created_at: string;
+  customer_name: string | null;
+  phone: string | null;
+  notes: string | null;
+  status: OrderStatus;
+};
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
+function asString(v: unknown): string | null {
+  return typeof v === "string" ? v : null;
+}
+
+function asOrderStatus(v: unknown): OrderStatus {
+  const s = typeof v === "string" ? v : "";
+  if (s === "pending" || s === "accepted" || s === "rejected" || s === "completed") return s;
+  return "pending";
+}
+
+function normalizeOrder(row: unknown): OrderRow | null {
+  if (!isRecord(row)) return null;
+
+  const id = asString(row["id"]);
+  const created_at = asString(row["created_at"]) ?? new Date().toISOString();
+
+  if (!id) return null;
+
+  return {
+    id,
+    created_at,
+    customer_name: asString(row["customer_name"]),
+    phone: asString(row["phone"]),
+    notes: asString(row["notes"]),
+    status: asOrderStatus(row["status"]),
+  };
 }
 
 export default function OrdersPage() {
-  return (
-    <RequireAuth>
-      <OrdersInner />
-    </RequireAuth>
-  );
-}
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
-function OrdersInner() {
-  const [asBuyer, setAsBuyer] = useState<Order[]>([]);
-  const [asSeller, setAsSeller] = useState<Order[]>([]);
-  const [listingById, setListingById] = useState<Record<string, Listing>>({});
-  const [userId, setUserId] = useState<string>("");
-  const [loading, setLoading] = useState(true);
+  const canUseSupabase = useMemo(() => Boolean(supabase), []);
 
-  async function refresh() {
-    setLoading(true);
-    const { data: userData } = await supabase.auth.getUser();
-    const user = userData.user;
-    if (!user) return;
-    setUserId(user.id);
-
-    const { data: ob } = await supabase.from("orders").select("*").eq("buyer_id", user.id).order("created_at", { ascending: false });
-    const { data: os } = await supabase.from("orders").select("*").eq("seller_id", user.id).order("created_at", { ascending: false });
-
-    const all = [...(ob as any ?? []), ...(os as any ?? [])] as Order[];
-    const listingIds = Array.from(new Set(all.map(o => o.listing_id)));
-
-    let map: Record<string, Listing> = {};
-    if (listingIds.length) {
-      const { data: ls } = await supabase.from("listings").select("*").in("id", listingIds);
-      for (const l of (ls as any ?? []) as Listing[]) map[l.id] = l;
-    }
-
-    setAsBuyer((ob as any) ?? []);
-    setAsSeller((os as any) ?? []);
-    setListingById(map);
-    setLoading(false);
-  }
-
-  useEffect(() => { refresh(); }, []);
-
-  async function updateOrder(id: string, status: Order["status"]) {
-    const { error } = await supabase.from("orders").update({ status }).eq("id", id);
-    if (error) {
-      alert(error.message);
+  const refresh = useCallback(async () => {
+    if (!supabase) {
+      setError("Supabase no está configurado (faltan NEXT_PUBLIC_SUPABASE_URL / ANON_KEY).");
       return;
     }
-    refresh();
+
+    setLoading(true);
+    setError(null);
+
+    const { data, error: qErr } = await supabase
+      .from("orders")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (qErr) {
+      setLoading(false);
+      setError(qErr.message);
+      return;
+    }
+
+    const safe: OrderRow[] = Array.isArray(data)
+      ? data.map((r: unknown) => normalizeOrder(r)).filter((x): x is OrderRow => x !== null)
+      : [];
+
+    setOrders(safe);
+    setLoading(false);
+  }, []);
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const updateOrderStatus = useCallback(async (id: string, status: OrderStatus) => {
+    if (!supabase) {
+      setError("Supabase no está configurado.");
+      return;
+    }
+
+    setError(null);
+
+    const { error: uErr } = await supabase.from("orders").update({ status }).eq("id", id);
+
+    if (uErr) {
+      setError(uErr.message);
+      return;
+    }
+
+    // Actualiza estado local sin recargar todo
+    setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, status } : o)));
+  }, []);
+
+  if (!canUseSupabase) {
+    return (
+      <main style={{ padding: 24 }}>
+        <h1>Orders</h1>
+        <p style={{ marginTop: 8 }}>
+          Falta configurar variables: <code>NEXT_PUBLIC_SUPABASE_URL</code> y{" "}
+          <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>.
+        </p>
+      </main>
+    );
   }
 
-  if (loading) return <div className="text-sm text-neutral-500">Cargando pedidos…</div>;
-
   return (
-    <div className="space-y-6">
-      <section>
-        <h1 className="text-2xl font-semibold tracking-tight">Pedidos</h1>
-        <p className="mt-2 text-sm text-neutral-600">
-          Flujo MVP: solicitado → aceptado → listo → completado (o cancelado).
-        </p>
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold">Como comprador</h2>
-        {asBuyer.length === 0 ? (
-          <div className="rounded-2xl border border-neutral-200 p-5 text-sm text-neutral-600">Aún no has hecho reservas.</div>
-        ) : (
-          <div className="grid gap-3">
-            {asBuyer.map(o => (
-              <OrderRow key={o.id} o={o} listing={listingById[o.listing_id]} me={userId} onUpdate={updateOrder} />
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold">Como cocinero</h2>
-        {asSeller.length === 0 ? (
-          <div className="rounded-2xl border border-neutral-200 p-5 text-sm text-neutral-600">Aún no tienes pedidos.</div>
-        ) : (
-          <div className="grid gap-3">
-            {asSeller.map(o => (
-              <OrderRow key={o.id} o={o} listing={listingById[o.listing_id]} me={userId} onUpdate={updateOrder} />
-            ))}
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function OrderRow({ o, listing, me, onUpdate }: { o: Order; listing?: Listing; me: string; onUpdate: (id: string, status: Order["status"]) => void }) {
-  const title = listing?.title ?? "Plato";
-  const currency = listing?.currency ?? "COP";
-  const isBuyer = o.buyer_id === me;
-  const isSeller = o.seller_id === me;
-
-  const actions: Array<{ label: string; status: Order["status"]; show: boolean }> = [
-    { label: "Cancelar", status: "cancelled", show: isBuyer && o.status === "requested" },
-    { label: "Aceptar", status: "accepted", show: isSeller && o.status === "requested" },
-    { label: "Marcar listo", status: "ready", show: isSeller && o.status === "accepted" },
-    { label: "Completar", status: "completed", show: (isSeller && o.status === "ready") || (isBuyer && o.status === "ready") },
-    { label: "Cancelar", status: "cancelled", show: isSeller && (o.status === "requested" || o.status === "accepted") },
-  ];
-
-  return (
-    <div className="rounded-2xl border border-neutral-200 p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="font-semibold truncate">{title}</div>
-          <div className="mt-1 text-xs text-neutral-500">Estado: <b>{o.status}</b></div>
-          {listing ? <div className="mt-1 text-xs text-neutral-500">{listing.neighborhood}, {listing.city}</div> : null}
-        </div>
-        <div className="shrink-0 text-right">
-          <div className="font-semibold">{money(o.total_cents, currency)}</div>
-          <div className="mt-1 text-xs text-neutral-500">x{o.quantity}</div>
-        </div>
+    <main style={{ padding: 24 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <h1 style={{ margin: 0 }}>Orders</h1>
+        <button onClick={() => void refresh()} disabled={loading} style={{ padding: "6px 10px" }}>
+          {loading ? "Cargando..." : "Refrescar"}
+        </button>
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-2">
-        {actions.filter(a => a.show).map(a => (
-          <button
-            key={a.label + a.status}
-            onClick={() => onUpdate(o.id, a.status)}
-            className="rounded-xl border border-neutral-300 px-3 py-1.5 hover:bg-neutral-50 text-sm"
+      {error ? (
+        <p style={{ marginTop: 12, color: "crimson" }}>
+          <strong>Error:</strong> {error}
+        </p>
+      ) : null}
+
+      <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
+        {orders.length === 0 && !loading ? <p>No hay pedidos.</p> : null}
+
+        {orders.map((o) => (
+          <div
+            key={o.id}
+            style={{
+              border: "1px solid #e5e5e5",
+              borderRadius: 12,
+              padding: 12,
+              display: "grid",
+              gap: 6,
+            }}
           >
-            {a.label}
-          </button>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>
+                  {o.customer_name ?? "Cliente"}{" "}
+                  <span style={{ fontWeight: 400, opacity: 0.7 }}>({o.id})</span>
+                </div>
+                <div style={{ fontSize: 13, opacity: 0.8 }}>
+                  {new Date(o.created_at).toLocaleString()}
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span
+                  style={{
+                    fontSize: 12,
+                    padding: "4px 8px",
+                    borderRadius: 999,
+                    border: "1px solid #ddd",
+                  }}
+                >
+                  {o.status}
+                </span>
+
+                <select
+                  value={o.status}
+                  onChange={(e) => void updateOrderStatus(o.id, e.target.value as OrderStatus)}
+                  style={{ padding: "6px 8px" }}
+                >
+                  <option value="pending">pending</option>
+                  <option value="accepted">accepted</option>
+                  <option value="rejected">rejected</option>
+                  <option value="completed">completed</option>
+                </select>
+              </div>
+            </div>
+
+            {o.phone ? (
+              <div style={{ fontSize: 13 }}>
+                <strong>Tel:</strong> {o.phone}
+              </div>
+            ) : null}
+
+            {o.notes ? (
+              <div style={{ fontSize: 13 }}>
+                <strong>Notas:</strong> {o.notes}
+              </div>
+            ) : null}
+          </div>
         ))}
       </div>
-    </div>
+    </main>
   );
 }
