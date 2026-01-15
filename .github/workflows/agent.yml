@@ -63,29 +63,32 @@ jobs:
     if: ${{ needs.preflight.outputs.ok == 'true' && github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (with GITHUB_TOKEN)
+      - name: Checkout (with credentials)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git auth (avoid terminal prompts)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "MAGOMOARCOS"
+          git config user.email "92266733+MAGOMOARCOS@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --prune --tags
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Configure git identity
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "MAGOMOARCOS"
-          git config user.email "92266733+MAGOMOARCOS@users.noreply.github.com"
-
       - name: Run Agent Controller (creates branch + PR from AGENT_TASKS.md)
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -93,5 +96,4 @@ jobs:
 
           test -n "${OPENAI_API_KEY:-}" || (echo "Missing OPENAI_API_KEY secret. Add it in Settings → Secrets and variables → Actions." && exit 1)
 
-          # Ejecuta tu controlador (ajusta la ruta si tu repo lo tiene en otra carpeta)
           python3 scripts/agent_controller.py
