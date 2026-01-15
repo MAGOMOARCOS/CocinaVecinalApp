@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 
 /**
- * Middleware SOLO para routing.
- * NO usar Supabase aquí (Edge Runtime).
+ * Middleware en Edge Runtime
+ * ─────────────────────────
+ * ⚠️ NO usar Supabase aquí (Edge no soporta Node APIs).
+ * Este middleware SOLO gestiona redirecciones de rutas protegidas.
  */
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
+  // Rutas que requieren login
   const protectedPrefixes = [
     "/my",
     "/onboarding",
@@ -28,6 +31,9 @@ export function middleware(req: NextRequest) {
   return NextResponse.next();
 }
 
+/**
+ * Aplica a todo excepto assets estáticos
+ */
 export const config = {
   matcher: [
     "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
