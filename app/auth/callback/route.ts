@@ -4,11 +4,8 @@ import { createServerClient } from "@supabase/ssr";
 
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url);
-
-  // ✅ Next cookies() ahora es async → hay que await
   const cookieStore = await cookies();
 
-  // Tipado interno SIN any para setAll
   type CookieToSet = {
     name: string;
     value: string;
