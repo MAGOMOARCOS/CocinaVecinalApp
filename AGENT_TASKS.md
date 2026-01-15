@@ -1,3 +1,11 @@
+---
+
+⚠️ NOTE:
+Todo el contenido anterior a este punto se considera **DEPRECATED**.
+El agente debe ejecutar **exclusivamente** las tareas definidas como `TASK 00X` a partir de aquí.
+
+---
+
 OBJETIVO PRIORITARIO (NO DIVAGAR):
 
 1. Arreglar definitivamente app/page.tsx para que:
