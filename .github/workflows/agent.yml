@@ -79,6 +79,5 @@ jobs:
           set -euo pipefail
           test -n "${OPENAI_API_KEY:-}" || (echo "Missing OPENAI_API_KEY secret" && exit 1)
           test -n "${GH_PAT:-}" || (echo "Missing GH_PAT secret" && exit 1)
-
           python3 --version
           python3 scripts/agent_controller.py
