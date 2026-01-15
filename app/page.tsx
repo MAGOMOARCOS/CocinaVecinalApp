@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import { useRef, useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from "react";
 
 type LeadResponse = { ok?: boolean; message?: string; error?: string };
 
@@ -11,7 +11,7 @@ export default function Home() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   function scrollToForm() {
-    formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -21,53 +21,52 @@ export default function Home() {
     setMessage(null);
     setError(null);
 
-    // ✅ Fuerza validación nativa del navegador (type=email, required, etc.)
     const form = e.currentTarget;
+
+    // Fuerza la validación HTML5 (type=email, required…)
     if (!form.reportValidity()) {
-      // el navegador ya mostrará el tooltip; nosotros ponemos un mensaje genérico
-      setError('Revisa los campos marcados (por ejemplo, el email).');
+      setError("Revisa los campos marcados (por ejemplo, el email).");
       return;
     }
 
     const fd = new FormData(form);
 
-    const name = String(fd.get('name') || '').trim();
-    const email = String(fd.get('email') || '').trim();
-    const city = (String(fd.get('city') || '').trim() || 'Medellín').trim();
-    const role = String(fd.get('role') || 'Ambos');
-    const wa = String(fd.get('wa') || '').trim();
-    const honeypot = String(fd.get('honeypot') || '').trim();
+    const name = String(fd.get("name") || "").trim();
+    const email = String(fd.get("email") || "").trim();
+    const city = (String(fd.get("city") || "").trim() || "Medellín").trim();
+    const role = String(fd.get("role") || "Ambos");
+    const wa = String(fd.get("wa") || "").trim();
+    const honeypot = String(fd.get("honeypot") || "").trim();
 
-    // Anti-bot: si viene relleno, ignoramos silenciosamente
+    // Anti-bot
     if (honeypot) {
-      setMessage('Gracias, estás en la lista');
+      setMessage("Gracias, estás en la lista");
       setError(null);
       form.reset();
       return;
     }
 
-    // ✅ Validación adicional (mensaje claro)
+    // Validación adicional clara
     if (!name || !email) {
-      setError('Nombre y email son requeridos');
+      setError("Nombre y email son requeridos");
       return;
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      setError('Email inválido');
+      setError("Email inválido");
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      const response = await fetch('/api/leads', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch("/api/leads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, email, city, role, wa, honeypot }),
       });
 
-      // ✅ Intentamos JSON, pero si falla, leemos texto
       let data: LeadResponse | null = null;
       let rawText: string | null = null;
 
@@ -81,17 +80,14 @@ export default function Home() {
         }
       }
 
-      // ✅ Éxito robusto: si 200 y no trae ok, lo damos por ok
-      const ok = response.ok && (data?.ok ?? true);
-
-      if (ok) {
+      if (response.ok && (data?.ok ?? true)) {
         setError(null);
-        setMessage(data?.message ?? 'Gracias, estás en la lista');
+        setMessage(data?.message ?? "Gracias, estás en la lista");
         form.reset();
         return;
       }
 
-      // ❌ Error real (no genérico)
+      // 👇 Aquí está la clave: mostramos el mensaje real del backend
       const errMsg =
         data?.error ??
         data?.message ??
@@ -101,9 +97,8 @@ export default function Home() {
       setMessage(null);
       setError(errMsg);
     } catch (err: any) {
-      // ❌ Error de red / JS
       setMessage(null);
-      setError(err?.message ? `Error de red: ${err.message}` : 'Error al enviar el formulario');
+      setError(err?.message ? `Error de red: ${err.message}` : "Error al enviar el formulario");
     } finally {
       setIsSubmitting(false);
     }
@@ -136,8 +131,6 @@ export default function Home() {
         .ghost{background:transparent;border:1px solid rgba(255,255,255,.18);color:var(--txt)}
         label{display:block;font-weight:700;margin:10px 0 6px}
         input,select{width:100%;padding:12px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.14);background:#0f1118;color:var(--txt);outline:none}
-        /* ✅ Para que el email largo se vea mejor */
-        input[type="email"]{font-variant-ligatures:none}
         .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
         @media(max-width:860px){.row{grid-template-columns:1fr}}
         .small{font-size:12px;color:var(--muted);margin-top:10px}
@@ -154,7 +147,7 @@ export default function Home() {
             <div className="logo">CV</div>
             <div>
               <div style={{ fontWeight: 900 }}>Cocina Vecinal</div>
-              <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+              <div style={{ fontSize: 12, color: "var(--muted)" }}>
                 Comida casera entre vecinos — Medellín primero
               </div>
             </div>
@@ -166,21 +159,36 @@ export default function Home() {
           <div className="card">
             <h1>Si cocinas en casa, puedes vender. Si no te apetece cocinar, puedes pedir.</h1>
             <p>
-              Cocina Vecinal conecta <b>cocinas caseras</b> con vecinos que quieren <b>comida asequible y real</b>.
-              Cada persona puede ser <b>oferta</b> y <b>demanda</b> según el día.
+              Cocina Vecinal conecta <b>cocinas caseras</b> con vecinos que quieren{" "}
+              <b>comida asequible y real</b>. Cada persona puede ser <b>oferta</b> y{" "}
+              <b>demanda</b> según el día.
             </p>
 
             <div className="grid3">
-              <div className="k"><b>Recogida</b><span>Quedas con tu vecino y recoges.</span></div>
-              <div className="k"><b>Entrega</b><span>El cocinero entrega (tarifa por tramos).</span></div>
-              <div className="k"><b>Comer en casa</b><span>Opción “anfitrión” (si el cocinero la habilita).</span></div>
+              <div className="k">
+                <b>Recogida</b>
+                <span>Quedas con tu vecino y recoges.</span>
+              </div>
+              <div className="k">
+                <b>Entrega</b>
+                <span>El cocinero entrega (tarifa por tramos).</span>
+              </div>
+              <div className="k">
+                <b>Comer en casa</b>
+                <span>Opción “anfitrión” (si el cocinero la habilita).</span>
+              </div>
             </div>
 
             <div className="cta">
-              <button className="primary" onClick={scrollToForm}>Unirme a la lista de espera</button>
+              <button className="primary" onClick={scrollToForm}>
+                Unirme a la lista de espera
+              </button>
               <button
                 className="ghost"
-                onClick={() => (window.location.href = 'mailto:info@cocinavecinal.com?subject=Contacto%20Cocina%20Vecinal')}
+                onClick={() =>
+                  (window.location.href =
+                    "mailto:info@cocinavecinal.com?subject=Contacto%20Cocina%20Vecinal")
+                }
               >
                 Contactar
               </button>
@@ -195,8 +203,12 @@ export default function Home() {
           </div>
 
           <div className="card" ref={formRef}>
-            <div style={{ fontWeight: 900, fontSize: 18, marginBottom: 6 }}>Únete a la lista de espera</div>
-            <p style={{ marginBottom: 12 }}>Te avisaremos cuando abramos en Medellín. (Sin spam)</p>
+            <div style={{ fontWeight: 900, fontSize: 18, marginBottom: 6 }}>
+              Únete a la lista de espera
+            </div>
+            <p style={{ marginBottom: 12 }}>
+              Te avisaremos cuando abramos en Medellín. (Sin spam)
+            </p>
 
             <form onSubmit={handleSubmit}>
               <div className="row">
@@ -212,10 +224,10 @@ export default function Home() {
                     required
                     placeholder="tu@email.com"
                     onInvalid={(ev) => {
-                      (ev.target as HTMLInputElement).setCustomValidity('Email inválido');
+                      (ev.target as HTMLInputElement).setCustomValidity("Email inválido");
                     }}
                     onInput={(ev) => {
-                      (ev.target as HTMLInputElement).setCustomValidity('');
+                      (ev.target as HTMLInputElement).setCustomValidity("");
                     }}
                   />
                 </div>
@@ -239,11 +251,11 @@ export default function Home() {
               <label>WhatsApp (opcional)</label>
               <input name="wa" placeholder="+57 ..." />
 
-              <input name="honeypot" type="text" style={{ display: 'none' }} />
+              <input name="honeypot" type="text" style={{ display: "none" }} />
 
               <div className="cta" style={{ marginTop: 12 }}>
                 <button className="primary" type="submit" disabled={isSubmitting} aria-busy={isSubmitting}>
-                  {isSubmitting ? 'Enviando…' : 'Apuntarme'}
+                  {isSubmitting ? "Enviando…" : "Apuntarme"}
                 </button>
               </div>
 
