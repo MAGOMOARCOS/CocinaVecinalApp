@@ -8,9 +8,7 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 
 const supabase =
-  supabaseUrl && supabaseAnonKey
-    ? createClient(supabaseUrl, supabaseAnonKey)
-    : null;
+  supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 
 type OrderStatus = "pending" | "accepted" | "rejected" | "completed";
 
@@ -83,18 +81,25 @@ export default function OrdersPage() {
     }
 
     const safe: OrderRow[] = Array.isArray(data)
-      ? data.map((r: unknown) => normalizeOrder(r)).filter((x): x is OrderRow => x !== null)
+      ? data
+          .map((r: unknown) => normalizeOrder(r))
+          .filter((x): x is OrderRow => x !== null)
       : [];
 
     setOrders(safe);
     setLoading(false);
   }, []);
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect
+  // ✅ Evita el warning "set-state-in-effect":
+  // No llamamos a refresh() directamente dentro del cuerpo síncrono del efecto.
+  // Lo diferimos a la siguiente vuelta del event loop.
   useEffect(() => {
-    void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const t = window.setTimeout(() => {
+      void refresh();
+    }, 0);
+
+    return () => window.clearTimeout(t);
+  }, [refresh]);
 
   const updateOrderStatus = useCallback(async (id: string, status: OrderStatus) => {
     if (!supabase) {
