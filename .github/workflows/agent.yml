@@ -1,30 +1,34 @@
-name: Repo Agent (Codex) - Fix Build + PR
+name: Agent Orchestrator
+
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "preflight=solo build. full=ejecuta agente + PR."
+        description: "preflight = solo build (gratis). full = build + ejecutar agente (requiere OPENAI_API_KEY)."
         required: true
-        default: "full"
+        default: "preflight"
         type: choice
-        options: [preflight, full]
-      instruction:
-        description: "Instrucción opcional (si vacío, usa AGENT_TASKS.md)."
-        required: false
-        default: ""
+        options:
+          - preflight
+          - full
+  push:
+    paths:
+      - "AGENT_TASKS.md"
+
+concurrency:
+  group: agent-orchestrator-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
   pull-requests: write
-
-concurrency:
-  group: repo-agent-${{ github.ref }}
-  cancel-in-progress: false
+  issues: write
 
 jobs:
-  agent:
+  preflight:
     runs-on: ubuntu-latest
-
+    outputs:
+      ok: ${{ steps.pf.outputs.ok }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,48 +41,45 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      - name: Install deps
-        run: npm ci
-
-      - name: Preflight build (always)
-        run: npm run build
-
-      - name: Prepare instruction
-        if: ${{ inputs.mode == 'full' }}
+      - name: Preflight (FREE): install + build
+        id: pf
         shell: bash
         run: |
-          set -e
-          if [ -n "${{ inputs.instruction }}" ]; then
-            echo "${{ inputs.instruction }}" > /tmp/AGENT_INSTRUCTION.txt
+          set -euo pipefail
+          echo "Node: $(node -v)"
+          echo "npm:  $(npm -v)"
+
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
           else
-            if [ -f "AGENT_TASKS.md" ]; then
-              cp AGENT_TASKS.md /tmp/AGENT_INSTRUCTION.txt
-            else
-              echo "AGENT_TASKS.md not found and no instruction provided." > /tmp/AGENT_INSTRUCTION.txt
-            fi
+            npm install --no-audit --no-fund
           fi
 
-      - name: Run agent (only in full)
-        if: ${{ inputs.mode == 'full' }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          node agent/runner.js --instruction-file /tmp/AGENT_INSTRUCTION.txt
+          npm run build
+          echo "ok=true" >> "$GITHUB_OUTPUT"
 
-      - name: Re-run build after agent
-        if: ${{ inputs.mode == 'full' }}
-        run: npm run build
-
-      - name: Create PR (safe)
-        if: ${{ inputs.mode == 'full' }}
-        uses: peter-evans/create-pull-request@v6
+  agent:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.ok == 'true' && github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          token: ${{ github.token }}
-          commit-message: "chore(agent): fix build + apply agent changes"
-          title: "chore(agent): fix build + apply agent changes"
-          body: |
-            Automated changes by Repo Agent (Codex).
-            - Ensures `npm run build` passes.
-            - Applies tasks from AGENT_TASKS.md (or manual instruction).
-          branch: agent/codex-${{ github.run_id }}-${{ github.run_attempt }}
-          delete-branch: true
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Agent Controller (creates branch + PR from AGENT_TASKS.md)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 --version
+          test -n "$OPENAI_API_KEY" || (echo "Missing OPENAI_API_KEY secret. Add it in Settings → Secrets and variables → Actions." && exit 1)
+
+          # Ejecuta tu controlador (asumiendo que existe en scripts/)
+          python3 scripts/agent_controller.py
