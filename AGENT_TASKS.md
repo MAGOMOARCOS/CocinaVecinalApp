@@ -115,3 +115,27 @@ Haz commits en esta rama hasta dejar `npm run build` en verde. Cambios mínimos.
 
 Entrega:
 - PR con cambios + checklist en el PR description de las pruebas anteriores.
+## TASK 001 — End-to-end leads + duplicados (frontend+backend) sin romper build
+STATUS: TODO
+BRANCH: agent/task-001-leads-e2e
+
+SCOPE:
+- Permitido: app/page.tsx, app/api/leads/route.ts, lib/**, types/**, utils/**
+- Prohibido: runtime edge, upgrades masivos, cambios de DB sin migration
+
+GOAL:
+- Landing funciona end-to-end: inserta lead en Supabase, maneja duplicados por email/teléfono y valida teléfono opcional.
+
+ACCEPTANCE:
+- [ ] Envío OK → inserta en Supabase (name, email, city, role, phone)
+- [ ] Email duplicado → HTTP 409 y mensaje EXACTO: "Email ya registrado"
+- [ ] Teléfono duplicado (si se envía) → HTTP 409 y mensaje EXACTO: "Teléfono ya registrado"
+- [ ] Email inválido → error claro en UI y NO envía
+- [ ] Teléfono opcional: si se rellena, exige repetir y que coincida (si no, NO envía)
+- [ ] Normalización de phone en frontend y backend: aceptar + espacios guiones, comparar/guardar como solo dígitos
+- [ ] `npm run build` pasa en GitHub Actions y Vercel
+
+NOTES:
+- UI: success y error mutuamente excluyentes (nunca ambos)
+- Tras success: limpiar campos (email/nombre/teléfonos), opcional mantener city/role
+- Backend: console.error sin filtrar secretos; devolver 409 solo para duplicados
