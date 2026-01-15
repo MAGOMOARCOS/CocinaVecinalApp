@@ -6,14 +6,30 @@ type LeadResponse = { ok?: boolean; message?: string; error?: string };
 
 function normalizePhone(v: string) {
   if (!v) return "";
+  // Mantiene dígitos y "+"; elimina espacios, guiones, paréntesis, etc.
   return v.trim().replace(/[^\d+]/g, "").slice(0, 32);
+}
+
+function countDigits(v: string) {
+  return v.replace(/\D/g, "").length;
 }
 
 export default function Home() {
   const formRef = useRef<HTMLDivElement | null>(null);
+
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  function setOk(msg: string) {
+    setError(null);
+    setMessage(msg);
+  }
+
+  function setErr(msg: string) {
+    setMessage(null);
+    setError(msg);
+  }
 
   function scrollToForm() {
     formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -23,6 +39,7 @@ export default function Home() {
     e.preventDefault();
     if (isSubmitting) return;
 
+    // Limpia estados al comenzar
     setMessage(null);
     setError(null);
 
@@ -30,7 +47,7 @@ export default function Home() {
 
     // Validación HTML5 básica
     if (!form.reportValidity()) {
-      setError("Revisa los campos marcados.");
+      setErr("Revisa los campos marcados.");
       return;
     }
 
@@ -41,6 +58,7 @@ export default function Home() {
     const city = (String(fd.get("city") || "").trim() || "Medellín").trim();
     const role = String(fd.get("role") || "Ambos");
 
+    // Teléfono (opcional) + confirmación
     const phone1 = normalizePhone(String(fd.get("phone") || ""));
     const phone2 = normalizePhone(String(fd.get("phone2") || ""));
 
@@ -48,36 +66,40 @@ export default function Home() {
 
     // Anti-bot silencioso
     if (honeypot) {
-      setMessage("Gracias, estás en la lista");
+      setOk("Gracias, estás en la lista");
       form.reset();
       return;
     }
 
     // Validaciones claras
     if (!name || !email) {
-      setError("Nombre y email son obligatorios");
+      setErr("Nombre y email son obligatorios");
       return;
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      setError("Email inválido");
+      setErr("Email inválido");
       return;
     }
 
-    // Teléfono: opcional, pero si se usa → doble confirmación
-    if (phone1 || phone2) {
+    // Teléfono: opcional. Si se usa, exige doble confirmación y mínimo de dígitos.
+    const anyPhone = !!(phone1 || phone2);
+    if (anyPhone) {
       if (!phone1 || !phone2) {
-        setError("Repite el teléfono para confirmarlo");
+        setErr("Repite el teléfono para confirmarlo");
         return;
       }
       if (phone1 !== phone2) {
-        setError("Los teléfonos no coinciden");
+        setErr("Los teléfonos no coinciden");
         return;
       }
-      const digits = phone1.replace(/\D/g, "");
-      if (digits.length < 6) {
-        setError("Teléfono inválido");
+
+      // Validación mínima sin atarte a país:
+      // - al menos 6 dígitos (evita basura tipo "12" o "+")
+      // - máximo ya lo corta normalizePhone (32 chars)
+      if (countDigits(phone1) < 6) {
+        setErr("Teléfono inválido");
         return;
       }
     }
@@ -105,16 +127,17 @@ export default function Home() {
         data = null;
       }
 
+      // OK
       if (response.ok && (data?.ok ?? true)) {
-        setMessage(data?.message ?? "Gracias, estás en la lista");
-        setError(null);
+        setOk(data?.message ?? "Gracias, estás en la lista");
         form.reset();
         return;
       }
 
-      setError(data?.error ?? "Error al enviar el formulario");
+      // Error controlado
+      setErr(data?.error ?? "Error al enviar el formulario");
     } catch {
-      setError("Error al enviar el formulario");
+      setErr("Error al enviar el formulario");
     } finally {
       setIsSubmitting(false);
     }
@@ -122,7 +145,7 @@ export default function Home() {
 
   return (
     <>
-      {/* === estilos intactos === */}
+      {/* === estilos intactos (solo mínimos para ok/err) === */}
       <style jsx global>{`
         :root{--bg:#0b0c10;--card:#12141b;--txt:#e9eefb;--muted:#aab3c5;--acc:#ff8a00;--ok:#39d98a}
         *{box-sizing:border-box}
@@ -190,14 +213,16 @@ export default function Home() {
               <label>Repite teléfono</label>
               <input name="phone2" placeholder="+57 300…" inputMode="tel" />
 
+              {/* honeypot */}
               <input name="honeypot" style={{ display: "none" }} />
 
               <button className="primary" type="submit" disabled={isSubmitting}>
                 {isSubmitting ? "Enviando…" : "Apuntarme"}
               </button>
 
-              {message && <div className="ok">{message}</div>}
-              {error && <div className="err">{error}</div>}
+              {/* IMPORTANTe: nunca ambos a la vez */}
+              {message && !error && <div className="ok">{message}</div>}
+              {error && !message && <div className="err">{error}</div>}
             </form>
           </div>
         </div>
