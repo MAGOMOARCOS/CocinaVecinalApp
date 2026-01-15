@@ -327,4 +327,6 @@ export default function Page() {
                 placeholder="+57 300..."
                 className="mt-2 w-full rounded-2xl bg-black/40 px-4 py-3 text-white outline-none shadow-[0_0_0_1px_rgba(255,255,255,0.10)] focus:shadow-[0_0_0_2px_rgba(249,115,22,0.70)]"
               />
-              <div className="mt-2 text-xs
+<div className="mt-2 text-xs text-white/60">
+  Si no pones teléfono, este campo se ignora. Si lo pones, debe coincidir.
+</div>
