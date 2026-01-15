@@ -63,10 +63,20 @@ jobs:
     if: ${{ needs.preflight.outputs.ok == 'true' && github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (use PAT for push/PR)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Configure git auth (PAT)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          git config user.name "MAGOMOARCOS"
+          git config user.email "92266733+MAGOMOARCOS@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git
+          git status
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -76,10 +86,14 @@ jobs:
       - name: Run Agent Controller (creates branch + PR from AGENT_TASKS.md)
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GH_PAT: ${{ secrets.GH_PAT }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           python3 --version
-          test -n "$OPENAI_API_KEY" || (echo "Missing OPENAI_API_KEY secret. Add it in Settings → Secrets and variables → Actions." && exit 1)
+
+          test -n "$OPENAI_API_KEY" || (echo "Missing OPENAI_API_KEY secret (expected: OPENAI_API_KEY)" && exit 1)
+          test -n "$GH_PAT" || (echo "Missing GH_PAT secret (expected: GH_PAT)" && exit 1)
 
           # Ejecuta tu controlador (asumiendo que existe en scripts/)
           python3 scripts/agent_controller.py
