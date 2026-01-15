@@ -1,148 +1,84 @@
 name: Repo Agent (Codex) - Fix Build + PR
-
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "preflight=solo build. full=ejecuta agente + PR."
+        required: true
+        default: "full"
+        type: choice
+        options: [preflight, full]
       instruction:
-        description: "Instrucción directa para el agente (si se deja vacío, usa AGENT_TASKS.md)"
+        description: "Instrucción opcional (si vacío, usa AGENT_TASKS.md)."
         required: false
-        type: string
-
-  push:
-    paths:
-      - "AGENT_TASKS.md"
+        default: ""
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  group: repo-agent
-  cancel-in-progress: true
+  group: repo-agent-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   agent:
     runs-on: ubuntu-latest
 
     steps:
-      # ---------------------------
-      # Checkout con PAT
-      # ---------------------------
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GH_PAT }}
 
-      # ---------------------------
-      # Node.js
-      # ---------------------------
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
 
-      # ---------------------------
-      # Instalar dependencias
-      # ---------------------------
-      - name: Install dependencies
-        run: |
-          set -e
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund
-          fi
+      - name: Install deps
+        run: npm ci
 
-      # ---------------------------
-      # Crear rama del agente
-      # ---------------------------
-      - name: Create agent branch
-        run: |
-          set -e
-          BRANCH="agent/codex-${GITHUB_RUN_ID}"
-          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
-          git checkout -b "$BRANCH"
+      - name: Preflight build (always)
+        run: npm run build
 
-      # ---------------------------
-      # Preparar instrucción
-      # ---------------------------
-      - name: Prepare agent instruction
+      - name: Prepare instruction
+        if: ${{ inputs.mode == 'full' }}
+        shell: bash
         run: |
           set -e
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.instruction }}" ]; then
+          if [ -n "${{ inputs.instruction }}" ]; then
             echo "${{ inputs.instruction }}" > /tmp/AGENT_INSTRUCTION.txt
           else
-            if [ ! -f AGENT_TASKS.md ]; then
-              echo "ERROR: No existe AGENT_TASKS.md ni se pasó instrucción manual."
-              exit 1
+            if [ -f "AGENT_TASKS.md" ]; then
+              cp AGENT_TASKS.md /tmp/AGENT_INSTRUCTION.txt
+            else
+              echo "AGENT_TASKS.md not found and no instruction provided." > /tmp/AGENT_INSTRUCTION.txt
             fi
-            cp AGENT_TASKS.md /tmp/AGENT_INSTRUCTION.txt
           fi
 
-      # ---------------------------
-      # EJECUTAR CODEX (CORRECTO)
-      # ---------------------------
-      - name: Run Codex Repo Agent
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: /tmp/AGENT_INSTRUCTION.txt
-          codex-home: ${{ github.workspace }}/.codex
-          sandbox: workspace-write
-          safety-strategy: drop-sudo
-
-      # ---------------------------
-      # Verificar conflictos Git
-      # ---------------------------
-      - name: Fail if conflict markers exist
-        run: |
-          set -e
-          if grep -RIn --exclude-dir=node_modules --exclude-dir=.git -E '^(<<<<<<<|=======|>>>>>>>)' .; then
-            echo "ERROR: Conflict markers detectados."
-            exit 1
-          fi
-
-      # ---------------------------
-      # Build obligatorio
-      # ---------------------------
-      - name: npm run build
-        run: |
-          set -e
-          npm run build
-
-      # ---------------------------
-      # Commit
-      # ---------------------------
-      - name: Commit changes
-        run: |
-          set -e
-          git config user.name "repo-agent"
-          git config user.email "repo-agent@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No hay cambios que commitear."
-            exit 0
-          fi
-          git commit -m "Agent: fix build (handleSubmit)"
-
-      # ---------------------------
-      # Push
-      # ---------------------------
-      - name: Push branch
-        run: |
-          git push -u origin "$BRANCH"
-
-      # ---------------------------
-      # Crear PR
-      # ---------------------------
-      - name: Create Pull Request
+      - name: Run agent (only in full)
+        if: ${{ inputs.mode == 'full' }}
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          gh pr create \
-            --title "Agent: fix build + handleSubmit" \
-            --body "PR automática del Repo-Agent (Codex). Build verificado y sin conflictos." \
-            --base main \
-            --head "$BRANCH" || true
+          node agent/runner.js --instruction-file /tmp/AGENT_INSTRUCTION.txt
+
+      - name: Re-run build after agent
+        if: ${{ inputs.mode == 'full' }}
+        run: npm run build
+
+      - name: Create PR (safe)
+        if: ${{ inputs.mode == 'full' }}
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ github.token }}
+          commit-message: "chore(agent): fix build + apply agent changes"
+          title: "chore(agent): fix build + apply agent changes"
+          body: |
+            Automated changes by Repo Agent (Codex).
+            - Ensures `npm run build` passes.
+            - Applies tasks from AGENT_TASKS.md (or manual instruction).
+          branch: agent/codex-${{ github.run_id }}-${{ github.run_attempt }}
+          delete-branch: true

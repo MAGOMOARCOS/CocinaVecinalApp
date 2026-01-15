@@ -1,5 +1,7 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+
+export const runtime = "nodejs";
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -10,104 +12,94 @@ type LeadPayload = {
   role?: string;
   wa?: string;
   honeypot?: string;
+
+  // aliases por si el frontend cambia nombres
   interest?: string;
   whatsapp?: string;
 };
+
+function json(status: number, body: Record<string, unknown>) {
+  return NextResponse.json(body, { status });
+}
+
+function getEnv(name: string) {
+  const v = process.env[name];
+  return v && v.trim() ? v.trim() : null;
+}
 
 export async function POST(req: Request) {
   let payload: LeadPayload;
 
   try {
-    payload = await req.json();
+    payload = (await req.json()) as LeadPayload;
   } catch {
-    return NextResponse.json(
-      { ok: false, error: "JSON inválido" },
-      { status: 400 }
-    );
+    return json(400, { ok: false, error: "JSON inválido" });
   }
 
-  const name = (payload.name ?? "").trim();
-  const email = (payload.email ?? "").trim();
-  const city = (payload.city ?? "").trim() || "Medellín";
-  const role = (payload.role ?? payload.interest ?? "Ambos").trim() || "Ambos";
-  const wa = (payload.wa ?? payload.whatsapp ?? "").trim();
-  const honeypot = (payload.honeypot ?? "").trim();
-
+  const honeypot = String(payload.honeypot || "").trim();
   if (honeypot) {
-    return NextResponse.json(
-      { ok: false, error: "Solicitud no válida" },
-      { status: 400 }
-    );
+    // Bot -> fingimos ok para no dar señales
+    return json(200, { ok: true, stored: false, message: "OK" });
   }
 
-  if (!name || !email) {
-    return NextResponse.json(
-      { ok: false, error: "Nombre y email son requeridos" },
-      { status: 400 }
-    );
+  const name = String(payload.name || "").trim();
+  const email = String(payload.email || "").trim().toLowerCase();
+  const city = String(payload.city || "").trim();
+  const role = String(payload.role || payload.interest || "").trim();
+  const wa = String(payload.wa || payload.whatsapp || "").trim();
+
+  if (!name || !email) return json(400, { ok: false, error: "Nombre y email son requeridos" });
+  if (!emailRegex.test(email)) return json(400, { ok: false, error: "Email inválido" });
+
+  // ENV: URL pública + SERVICE ROLE solo en servidor (recomendado para evitar líos con RLS)
+  const supabaseUrl = getEnv("NEXT_PUBLIC_SUPABASE_URL");
+  const serviceRole = getEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!supabaseUrl || !serviceRole) {
+    return json(500, {
+      ok: false,
+      error:
+        "Faltan variables de entorno. Requiere NEXT_PUBLIC_SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY",
+    });
   }
 
-  if (!emailRegex.test(email)) {
-    return NextResponse.json(
-      { ok: false, error: "Email inválido" },
-      { status: 400 }
-    );
-  }
-
-  const supabaseUrl =
-    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseServiceKey) {
-    console.warn("[leads] Falta configuración de Supabase.");
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "Falta configuración de Supabase",
-        stored: false,
-      },
-      { status: 500 }
-    );
-  }
-
-  const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
+  const supabase = createClient(supabaseUrl, serviceRole, {
+    auth: { persistSession: false, autoRefreshToken: false },
   });
 
+  // Cambia este nombre si tu tabla se llama distinto
+  const TABLE = "leads";
+
   try {
-    const { error } = await supabase.from("leads").insert({
-      name,
-      email,
-      city,
-      role,
-      whatsapp: wa,
-    });
+    // Upsert por email (requiere UNIQUE(email) en la tabla)
+    const { error } = await supabase
+      .from(TABLE)
+      .upsert(
+        [
+          {
+            name,
+            email,
+            city: city || null,
+            role: role || null,
+            wa: wa || null,
+            source: "landing",
+          },
+        ],
+        { onConflict: "email" }
+      );
 
     if (error) {
-      console.error("[leads] Error al guardar lead", error);
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "No se pudo guardar el lead",
-          stored: false,
-        },
-        { status: 500 }
-      );
+      console.error("[leads] Supabase error:", error);
+      return json(500, { ok: false, error: "No se pudo guardar el lead" });
     }
 
-    return NextResponse.json({
+    return json(200, {
       ok: true,
       stored: true,
       message: "Gracias, estás en la lista",
     });
-  } catch (error) {
-    console.error("[leads] Error inesperado", error);
-    return NextResponse.json(
-      { ok: false, error: "Error inesperado", stored: false },
-      { status: 500 }
-    );
+  } catch (e) {
+    console.error("[leads] Error inesperado:", e);
+    return json(500, { ok: false, error: "Error inesperado" });
   }
 }
