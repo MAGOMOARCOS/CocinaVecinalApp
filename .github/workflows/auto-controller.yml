@@ -3,7 +3,6 @@ name: AutoController (CocinaVecinal)
 on:
   workflow_dispatch:
   schedule:
-    # cada 15 min (ajusta si quieres)
     - cron: "*/15 * * * *"
 
 permissions:
@@ -12,9 +11,8 @@ permissions:
   pull-requests: read
   actions: write
 
-
 concurrency:
-  group: auto-controller-${{ github.repository }}
+  group: autocontroller
   cancel-in-progress: false
 
 jobs:
@@ -31,14 +29,20 @@ jobs:
 
       - name: Run controller
         env:
-          # IMPORTANTÍSIMO: estos nombres deben coincidir con tus Secrets EXACTOS
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GH_PAT: ${{ secrets.GH_PAT }}
+          # ✅ Usa el token interno correcto (este SIEMPRE existe)
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          # Config del controlador (ajusta a tu gusto)
-          OPENAI_MODEL: gpt-5-mini
+          # OpenAI
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-4o-mini
+
+          # Issue de control
           ISSUE_NUMBER: "2"
-          AGENT_WORKFLOW_FILE: agent.yml
+
+          # Workflow del agente
+          AGENT_WORKFLOW_FILE: "agent.yml"
+
+          # Control de cadencia
           MIN_INTERVAL_MINUTES: "12"
           MAX_COMMENTS: "18"
         run: |
