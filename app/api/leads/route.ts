@@ -11,33 +11,27 @@ type LeadPayload = {
   city?: string;
   role?: string;
 
-  // frontend puede mandar cualquiera de estos
+  // frontend puede mandar cualquiera de estos:
   wa?: string;
   whatsapp?: string;
   phone?: string;
 
   honeypot?: string;
-  interest?: string; // lo ignoramos (no existe columna)
+
+  // alias “por si acaso” (no existe columna en tabla, se ignora)
+  interest?: string;
 };
 
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as LeadPayload;
 
-    // honeypot anti-bots
+    // Honeypot anti-bots: si viene relleno, fingimos OK sin guardar.
     if (body.honeypot && body.honeypot.trim().length > 0) {
       return NextResponse.json({ ok: true, message: "OK" }, { status: 200 });
     }
 
-    const name = (body.name ?? "").trim() || null;
     const email = (body.email ?? "").trim().toLowerCase();
-    const city = (body.city ?? "").trim() || null;
-    const role = (body.role ?? "").trim() || null;
-
-    // NORMALIZACIÓN WhatsApp/phone
-    const phone =
-      (body.wa ?? body.whatsapp ?? body.phone ?? "").trim() || null;
-
     if (!email || !emailRegex.test(email)) {
       return NextResponse.json(
         { ok: false, error: "Email inválido" },
@@ -45,26 +39,51 @@ export async function POST(req: Request) {
       );
     }
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+    const name = (body.name ?? "").trim() || null;
+    const city = (body.city ?? "").trim() || null;
+    const role = (body.role ?? "").trim() || null;
+
+    // NORMALIZACIÓN: WhatsApp / phone (lo guardamos en columna 'phone')
+    const phone =
+      (body.wa ?? body.whatsapp ?? body.phone ?? "").trim() || null;
+
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !serviceKey) {
+      console.error("[/api/leads] Missing env vars", {
+        hasUrl: Boolean(supabaseUrl),
+        hasServiceKey: Boolean(serviceKey),
+      });
+      return NextResponse.json(
+        { ok: false, error: "Configuración incompleta del servidor" },
+        { status: 500 }
+      );
+    }
+
     const supabase = createClient(supabaseUrl, serviceKey, {
       auth: { persistSession: false },
     });
 
-    // 👇 AQUÍ ESTÁ LA CLAVE: mapear a las columnas reales
-    const { error } = await supabase.from("leads").insert({
-      email,          // NOT NULL
-      name,
-      city,
-      role,
-      phone,          // columna real en tabla (no "wa")
-      source: "landing",
-      // message es nullable: no hace falta
-    });
+    // IMPORTANTE: insertar SOLO columnas reales de la tabla 'leads'
+    // y usar UPSERT por email para que pruebas repetidas no fallen.
+    const { error } = await supabase
+      .from("leads")
+      .upsert(
+        {
+          email,          // NOT NULL
+          name,
+          city,
+          role,
+          phone,          // columna REAL en tabla
+          source: "landing",
+          // message es nullable: no hace falta
+        },
+        { onConflict: "email" }
+      );
 
     if (error) {
-      // Log útil para Vercel logs
-      console.error("[/api/leads] supabase insert error:", error);
+      console.error("[/api/leads] supabase upsert error:", error);
       return NextResponse.json(
         { ok: false, error: "No se pudo guardar el lead" },
         { status: 500 }
