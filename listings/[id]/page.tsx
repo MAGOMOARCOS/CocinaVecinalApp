@@ -1,158 +1,145 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
+import type { Listing } from "@/lib/types";
 import { useParams, useRouter } from "next/navigation";
-import { createClient } from "@supabase/supabase-js";
+import RequireAuth from "@/components/RequireAuth";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
-
-const supabase =
-  supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
-
-type ListingStatus = "draft" | "published" | "paused" | "archived";
-
-type ListingRow = {
-  id: string;
-  created_at: string;
-  title: string | null;
-  description: string | null;
-  city: string | null;
-  price: number | null;
-  status: ListingStatus | null;
-  user_id: string | null;
-};
-
-function asStringParam(v: string | string[] | undefined): string {
-  if (!v) return "";
-  return Array.isArray(v) ? (v[0] ?? "") : v;
+function money(cents: number, currency: string) {
+  const value = cents / 100;
+  return new Intl.NumberFormat("es-CO", { style: "currency", currency }).format(value);
 }
 
 export default function ListingDetailPage() {
-  const router = useRouter();
-  const params = useParams();
+  const params = useParams<{ id: string }>();
+  const [l, setL] = useState<Listing | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const id = useMemo(() => {
-    // useParams() puede devolver string | string[]
-    const raw = (params as Record<string, string | string[] | undefined>)["id"];
-    return asStringParam(raw);
-  }, [params]);
-
-  const [loading, setLoading] = useState<boolean>(false);
-  const [listing, setListing] = useState<ListingRow | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    if (!id) {
-      setError("Falta el parámetro id en la URL.");
-      setListing(null);
-      return;
-    }
-
-    if (!supabase) {
-      setError("Supabase no está configurado (faltan NEXT_PUBLIC_SUPABASE_URL / ANON_KEY).");
-      setListing(null);
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    const { data, error: qErr } = await supabase
-      .from("listings")
-      .select("id, created_at, title, description, city, price, status, user_id")
-      .eq("id", id)
-      .maybeSingle<ListingRow>();
-
-    if (qErr) {
-      setLoading(false);
-      setError(qErr.message);
-      setListing(null);
-      return;
-    }
-
-    if (!data) {
-      setLoading(false);
-      setError("No existe un listing con ese id.");
-      setListing(null);
-      return;
-    }
-
-    setListing(data);
-    setLoading(false);
-  }, [id]);
-
-  // Tu repo tiene la regla react-hooks/set-state-in-effect que marca esto como error
-  // aunque sea un patrón normal. Para no pelear, lo silenciamos SOLO aquí.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
-    void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refresh]);
+    let mounted = true;
+
+    const run = async () => {
+      setLoading(true);
+
+      const { data } = await supabase
+        .from("listings")
+        .select("*")
+        .eq("id", params.id)
+        .maybeSingle<Listing>();
+
+      if (!mounted) return;
+
+      setL(data ?? null);
+      setLoading(false);
+    };
+
+    void run();
+    return () => {
+      mounted = false;
+    };
+  }, [params.id]);
+
+  if (loading) return <div className="text-sm text-neutral-500">Cargando…</div>;
+  if (!l) return <div className="text-sm text-neutral-600">No encontrado.</div>;
 
   return (
-    <main className="mx-auto max-w-3xl p-6">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Detalle del listing</h1>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            className="rounded border px-3 py-2 text-sm"
-            onClick={() => router.back()}
-          >
-            Volver
-          </button>
-          <button
-            type="button"
-            className="rounded border px-3 py-2 text-sm"
-            onClick={() => void refresh()}
-            disabled={loading}
-          >
-            {loading ? "Cargando..." : "Refrescar"}
-          </button>
+    <div className="mx-auto max-w-2xl space-y-4">
+      <div className="rounded-3xl border border-neutral-200 p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold tracking-tight">{l.title}</h1>
+            <div className="mt-2 text-sm text-neutral-600">
+              {l.neighborhood}, {l.city}
+            </div>
+            <div className="mt-2 inline-flex items-center rounded-full border border-neutral-200 px-2 py-0.5 text-[11px] text-neutral-600">
+              {l.status}
+            </div>
+          </div>
+
+          <div className="text-right">
+            <div className="text-xl font-semibold">{money(l.price_cents, l.currency)}</div>
+            <div className="text-sm text-neutral-500">{l.portions} porciones</div>
+          </div>
+        </div>
+
+        {l.description ? <p className="mt-4 text-neutral-700">{l.description}</p> : null}
+
+        <div className="mt-6">
+          <Reserve listing={l} />
         </div>
       </div>
 
-      <div className="mt-4 rounded border p-4">
-        {error ? (
-          <p className="text-sm text-red-600">{error}</p>
-        ) : loading ? (
-          <p className="text-sm">Cargando...</p>
-        ) : !listing ? (
-          <p className="text-sm">Sin datos.</p>
-        ) : (
-          <div className="space-y-2 text-sm">
-            <div>
-              <span className="font-medium">ID:</span> {listing.id}
-            </div>
-            <div>
-              <span className="font-medium">Creado:</span> {listing.created_at}
-            </div>
-            <div>
-              <span className="font-medium">Título:</span> {listing.title ?? "—"}
-            </div>
-            <div>
-              <span className="font-medium">Ciudad:</span> {listing.city ?? "—"}
-            </div>
-            <div>
-              <span className="font-medium">Precio:</span>{" "}
-              {typeof listing.price === "number" ? listing.price : "—"}
-            </div>
-            <div>
-              <span className="font-medium">Estado:</span> {listing.status ?? "—"}
-            </div>
-            <div>
-              <span className="font-medium">Usuario:</span> {listing.user_id ?? "—"}
-            </div>
-            <div>
-              <span className="font-medium">Descripción:</span>
-              <div className="mt-1 whitespace-pre-wrap rounded bg-gray-50 p-3">
-                {listing.description ?? "—"}
-              </div>
-            </div>
-          </div>
-        )}
+      <div className="rounded-3xl border border-neutral-200 p-6 text-sm text-neutral-600">
+        Privacidad: el punto exacto se concreta tras la reserva (MVP).
       </div>
-    </main>
+    </div>
+  );
+}
+
+function Reserve({ listing }: { listing: Listing }) {
+  const router = useRouter();
+  const [qty, setQty] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const disabled = listing.status !== "active";
+
+  return (
+    <RequireAuth>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-neutral-600">Cantidad</span>
+          <input
+            type="number"
+            min={1}
+            value={qty}
+            onChange={(e) => setQty(Number(e.target.value))}
+            className="w-20 rounded-xl border border-neutral-300 px-3 py-2 outline-none focus:border-neutral-900"
+            disabled={disabled}
+          />
+        </div>
+
+        <button
+          disabled={busy || disabled}
+          onClick={async () => {
+            setBusy(true);
+            setErr("");
+
+            const { data: userData } = await supabase.auth.getUser();
+            const user = userData.user;
+
+            if (!user) {
+              router.replace("/login");
+              return;
+            }
+
+            const total = listing.price_cents * qty;
+
+            const { error } = await supabase.from("orders").insert({
+              listing_id: listing.id,
+              buyer_id: user.id,
+              seller_id: listing.user_id,
+              quantity: qty,
+              total_cents: total,
+              status: "requested",
+            });
+
+            if (error) {
+              setErr(error.message);
+              setBusy(false);
+              return;
+            }
+
+            router.replace("/orders");
+          }}
+          className="rounded-xl bg-neutral-900 px-4 py-2 text-white hover:bg-neutral-800 disabled:opacity-60"
+        >
+          {disabled ? "No disponible" : busy ? "Reservando…" : "Reservar"}
+        </button>
+      </div>
+
+      {err ? <div className="mt-2 text-sm text-red-600">{err}</div> : null}
+    </RequireAuth>
   );
 }
