@@ -1,12 +1,21 @@
-import { createClient } from '@supabase/supabase-js'
+// lib/supabaseClient.ts
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-export function getSupabaseClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+let _client: SupabaseClient | null = null;
 
-  if (!url || !key) {
-    throw new Error('Supabase env vars missing')
-  }
+/**
+ * Cliente Supabase SOLO para navegador (usa NEXT_PUBLIC_*).
+ * - No se crea en top-level (evita romper build/CI).
+ * - Si faltan env vars, devuelve null (no revienta CI).
+ */
+export function getSupabaseClient(): SupabaseClient | null {
+  if (_client) return _client;
 
-  return createClient(url, key)
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) return null;
+
+  _client = createClient(supabaseUrl, supabaseAnonKey);
+  return _client;
 }
