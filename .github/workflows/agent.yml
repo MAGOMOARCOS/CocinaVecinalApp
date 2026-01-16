@@ -1,3 +1,15 @@
+name: Agent Snapshot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
       - name: Repo snapshot (listado de archivos)
         run: |
           echo "=== PWD ==="
