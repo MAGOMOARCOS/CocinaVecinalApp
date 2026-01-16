@@ -1,27 +1,27 @@
-name: AutoController (CocinaVecinal)
+name: Codex Agent
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "preflight = GRATIS (solo valida build). full = Preflight + Agente (CUESTA)."
+        description: "preflight = GRATIS (solo valida build). full = Preflight + Codex (CUESTA)."
         required: true
         default: "preflight"
         type: choice
-        options:
-          - preflight
-          - full
+        options: [preflight, full]
       instruction:
-        description: "Opcional. Si está vacío, el agente usa AGENT_TASKS.md"
+        description: "Opcional. Si está vacío, usa AGENT_TASKS.md"
         required: false
         type: string
 
   push:
+    branches: [main]
     paths:
       - "AGENT_TASKS.md"
+      - ".github/workflows/agent.yml"
 
 concurrency:
-  group: cocinavecinal-agent-${{ github.ref }}
+  group: codex-agent-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -29,23 +29,12 @@ permissions:
   pull-requests: write
   issues: write
 
-# ✅ Fallback para push: github.event.inputs NO existe en push.
-# Con esto MODE siempre tiene valor.
-env:
-  MODE: ${{ github.event.inputs.mode || 'preflight' }}
-  INSTRUCTION: ${{ github.event.inputs.instruction || '' }}
-
 jobs:
   preflight:
-    name: Preflight (FREE) — install + build
     runs-on: ubuntu-latest
-    outputs:
-      ok: ${{ steps.pf.outputs.ok }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -53,73 +42,24 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      - name: Install + Build
-        id: pf
-        shell: bash
+      - name: Install
         run: |
-          set -euo pipefail
-          echo "Node: $(node -v)"
-          echo "npm:  $(npm -v)"
+          if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund
-          fi
+      - name: Build
+        run: npm run build
 
-          npm run build
-          echo "ok=true" >> "$GITHUB_OUTPUT"
-
-  agent:
-    name: Agent (PAID) — branch + PR from AGENT_TASKS.md
-    needs: preflight
-    # ✅ Solo corre si:
-    # - preflight ok
-    # - se lanzó manualmente (workflow_dispatch)
-    # - mode == full
-    if: ${{ needs.preflight.outputs.ok == 'true' && github.event_name == 'workflow_dispatch' && env.MODE == 'full' }}
+  codex:
     runs-on: ubuntu-latest
+    needs: preflight
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full' }}
     steps:
-      - name: Checkout (with credentials)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: true
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install deps
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund
-          fi
-
-      - name: Run Agent Controller
+      - name: Run Codex Controller
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GITHUB_TOKEN: ${{ github.token }}
-          AGENT_MODE: ${{ env.MODE }}
-          AGENT_INSTRUCTION: ${{ env.INSTRUCTION }}
-        shell: bash
         run: |
-          set -euo pipefail
           python3 --version
-
-          test -n "${OPENAI_API_KEY:-}" || (echo "Missing OPENAI_API_KEY secret. Add it in Settings -> Secrets and variables -> Actions" && exit 1)
-
-          # Si pasas instruction en Run workflow, el controller puede leerla.
-          # Si no, usa AGENT_TASKS.md automáticamente.
           python3 scripts/agent_controller.py
