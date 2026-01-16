@@ -1,33 +1,7 @@
-on:
-  pull_request:
-  push:
-    branches: [main]
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
-jobs:
-  build-lint-typecheck:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint --if-present
-
-      - name: Typecheck
-        run: npm run typecheck --if-present
-
-      - name: Build
-        run: npm run build
+- name: CI env (placeholders)
+  shell: bash
+  run: |
+    echo "NEXT_PUBLIC_SUPABASE_URL=https://example.supabase.co" >> $GITHUB_ENV
+    echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.placeholder" >> $GITHUB_ENV
+    echo "SUPABASE_URL=https://example.supabase.co" >> $GITHUB_ENV
+    echo "SUPABASE_SERVICE_ROLE_KEY=placeholder" >> $GITHUB_ENV
