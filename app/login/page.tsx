@@ -1,15 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { createClient } from "@supabase/supabase-js";
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
-
-const supabase =
-  supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
+import { useMemo, useState } from "react";
+import { getSupabaseClient } from "@/lib/supabaseClient";
 
 export default function LoginPage() {
+  const supabase = useMemo(() => getSupabaseClient(), []);
+
   const [email, setEmail] = useState<string>("");
   const [password, setPassword] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +17,7 @@ export default function LoginPage() {
     setOk(false);
 
     if (!supabase) {
-      setError("Supabase no configurado.");
+      setError("Supabase no configurado (faltan env vars).");
       return;
     }
 
