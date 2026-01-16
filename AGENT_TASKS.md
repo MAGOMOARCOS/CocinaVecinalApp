@@ -1,149 +1,207 @@
+# AGENT_TASKS — Cocina Vecinal (MVP FUNCIONAL)
 
+## Objetivo
+Lanzar un MVP funcional de marketplace P2P de comida casera (piloto Medellín) con:
+- exploración de platos
+- publicación por cocineros
+- pedido + pago real (retención/liberación)
+- chat post-pago ligado al pedido para concretar entrega (picante/sin sal/alergias/hora/punto)
+- modalidades: Recogida / Entrega (con radio) / Comer en casa
+- privacidad: público = barrio/zona; dirección exacta solo post-pago
 
-⚠️ NOTE:
-Todo el contenido anterior a este punto se considera **DEPRECATED**.
-El agente debe ejecutar **exclusivamente** las tareas definidas como `TASK 00X` a partir de aquí.
+## Stack / Reglas técnicas (NO negociar)
+- Next.js (App Router) + TypeScript
+- /app como única fuente de rutas
+- API solo en /app/api
+- Deploy estable en Vercel (Node LTS)
+- No duplicar rutas (no /my, no auth/page.tsx, etc.)
+- UI consistente (dark + minimal)
+- Nada de secretos en git (.env.local fuera)
 
+## Estructura base (confirmada)
+app/
+├─ page.tsx
+├─ listings/
+│  ├─ page.tsx
+│  ├─ new/page.tsx
+│  └─ [id]/page.tsx
+├─ dashboard/
+│  └─ listings/page.tsx
+├─ login/page.tsx
+├─ api/
+│  ├─ leads/route.ts
+│  ├─ listings/route.ts
+│  ├─ orders/route.ts
+│  ├─ payments/route.ts
+│  └─ webhooks/route.ts
+└─ auth/
+   └─ callback/route.ts
 
+---
 
-OBJETIVO PRIORITARIO (NO DIVAGAR):
+# STAGE 1 — Consolidar Landing (captación)
+- [ ] Validar y reforzar formulario existente (nombre, email, ciudad, rol, teléfono opcional + repetir)
+- [ ] Manejo de errores robusto (duplicados, validación, API down)
+- [ ] Mensajería clara: “landing temporal”
+DoD:
+- "/" funciona estable
+- POST /api/leads estable y sin duplicados
 
-1. Arreglar definitivamente app/page.tsx para que:
-   - npm run build pase en Vercel
-   - no haya errores de “Expected a semicolon”
-   - handleSubmit tenga try/catch/finally bien cerrados
+---
 
-2. Verificar localmente con npm run build.
+# STAGE 2 — MODELOS MVP (types + reglas)
+## Datos mínimos de Listing (plato)
+- id, title, description, price_cop
+- modes:
+  - mode_pickup:boolean
+  - mode_delivery:boolean
+  - mode_dine_in:boolean
+- entrega:
+  - delivery_radius_km:number|null (solo si mode_delivery)
+  - delivery_fee_model:"flat"|"by_distance" (MVP: flat)
+  - delivery_fee_flat_cop:number|null
+- ubicación/privacidad:
+  - area_public:string (barrio/zona visible)
+  - address_exact_private:string|null (NO visible pre-pago)
+- instrucciones:
+  - pickup_instructions:string|null
+  - dine_in_rules:string|null
 
-3. Si hay cambios:
-   - crear rama agent/codex-*
-   - commit
-   - abrir Pull Request automáticamente.
+DoD:
+- Tipos/validaciones definidos y usados en UI y API
+- Privacidad de dirección respetada
 
-No modificar agent.yml.
-No tocar otros archivos si no es estrictamente necesario.
+---
 
+# STAGE 3 — Listado público de platos (explorar)
+- [ ] /listings/page.tsx: listado + filtros por modalidad + precio
+- [ ] Mostrar badges:
+  - Recogida
+  - Entrega (hasta X km)
+  - Comer en casa (si aplica)
+- [ ] /listings/[id]/page.tsx: detalle completo + CTA “Pedir”
+- [ ] Antes de pagar:
+  - mostrar area_public
+  - NO mostrar address_exact_private
 
-## TAREA PRIORITARIA (BUILD ESTABLE)
-1) Ejecuta `npm install` para regenerar/actualizar `package-lock.json` y dejarlo 100% sincronizado con `package.json`.
-2) Asegura que `npm run build` pasa en limpio.
-3) NO modifiques nada dentro de `.github/workflows/` (ni lo crees, ni lo edites).
-4) Commit separado: "chore: sync package-lock and fix build"
+DoD:
+- /listings no da 404
+- lista → detalle OK
+- dirección exacta nunca aparece pre-pago
 
-@codex Arregla el build que falla en Vercel (module not found tipo "@/lib/supabaseClient").
-Haz commits en esta rama hasta dejar `npm run build` en verde. Cambios mínimos.
+---
 
-# Instrucciones del agente
+# STAGE 4 — Publicar plato (cocinero)
+- [ ] /listings/new/page.tsx: formulario completo del Listing
+  - modalidades (checkboxes)
+  - si Entrega: pedir radio (km) + tarifa flat (COP)
+  - barrio/zona pública (area_public)
+  - dirección exacta privada (address_exact_private) (guardada, pero no pública)
+  - instrucciones (pickup_instructions / dine_in_rules)
+- [ ] Guardar listing (mock o API real simple)
 
-1. Verificar que exista carpeta `/app` con `layout.tsx` y `page.tsx`.
-2. Crear `/lib/supabaseClient.ts` con la conexión al proyecto Supabase.
-3. Comprobar `/auth/callback/page.tsx` y corregir importación de `@/lib/supabaseClient`.
-4. Añadir carpeta `/components` con:
-   - `Header.tsx`
-   - `Footer.tsx`
-   - `Loader.tsx`
-5. Crear `/styles/globals.css` con Tailwind correctamente importado.
-6. Revisar `/package.json` y dependencias necesarias:
-   - `next`
-   - `react`
-   - `react-dom`
-   - `@supabase/supabase-js`
-   - `tailwindcss`
-   - `postcss`
-   - `autoprefixer`
-7. Ejecutar `npm run build` y asegurar que no hay errores.
-8. Configurar deploy automático en Vercel.
-## NEXT (prioridad alta) — continuar con el agente
+DoD:
+- Crear listing estable
+- Validación correcta
+- No romper UI
 
-### 1) Limpieza del repo (evitar duplicados)
-- Verificar que NO existen carpetas duplicadas tipo `CocinaVecinalApp-main/` ni archivos espejo `page.tsx` fuera de `app/`.
-- Si existen, eliminarlos y actualizar imports/rutas para que solo quede una fuente de verdad:
-  - UI: `app/page.tsx`
-  - API: `app/api/leads/route.ts`
+---
 
-### 2) Formulario: teléfono (no WhatsApp) + validación
-- En UI, el campo debe llamarse “Teléfono (opcional)” (no WhatsApp).
-- Añadir “Repite teléfono” y validar:
-  - Si uno está relleno, el otro debe estar relleno.
-  - Deben coincidir tras normalizar (quitar espacios, guiones, paréntesis).
-  - No limitar por país (permitir +, espacios y guiones).
-- Si no coincide: mostrar error claro y NO enviar.
+# STAGE 5 — Dashboard cocinero (gestión)
+- [ ] /dashboard/listings/page.tsx: listar “mis platos”
+- [ ] acciones mínimas: activar/desactivar (MVP)
+- [ ] acceso privado (auth real o mock, pero con guard)
 
-### 3) Mensajería limpia (no mostrar éxito y error a la vez)
-- Unificar el estado del formulario: `status = 'idle' | 'success' | 'error'`.
-- Garantizar que nunca se rendericen simultáneamente el “Gracias…” y “Error…”.
-- Si la API devuelve `{ ok:false, error:'Email ya registrado' }` o `{ ok:false, error:'Teléfono ya registrado' }`, mostrar exactamente eso.
+DoD:
+- Ruta privada consistente
+- Gestión mínima operativa
 
-### 4) API /api/leads robusta e idempotente
-- En `app/api/leads/route.ts`:
-  - Validar email con regex y devolver 400 si es inválido.
-  - Aceptar `phone` opcional (string) y normalizarlo.
-  - Insertar en tabla `leads` con `.insert({ name, email, city, role, phone })`.
-  - Manejar violaciones de UNIQUE:
-    - Email duplicado => 409 con `Email ya registrado`
-    - Teléfono duplicado => 409 con `Teléfono ya registrado`
-  - Si todo ok => 200 con `Gracias, estás en la lista`
-- No usar `service_role` en frontend. Solo en server.
+---
 
-### 5) Build y deploy
-- Ejecutar `npm ci` y `npm run build`.
-- Si compila, abrir PR con cambios y descripción breve del fix.
-## NEXT (ejecutar)
+# STAGE 6 — Pedidos + Pago real (NÚCLEO)
+## Flujo
+1) Comprador selecciona Listing
+2) Crea pedido (order) con notas iniciales para cocinero
+3) Checkout → pago real
+4) Webhook PSP confirma pago → order.payment_status=PAID
+5) Desde PAID:
+   - se revela dirección exacta (si aplica)
+   - chat ON
 
-@codex
-1) Verifica que la landing funciona end-to-end en producción:
-   - envío OK → inserta en Supabase
-   - email duplicado → mensaje “Email ya registrado”
-   - teléfono duplicado → mensaje “Teléfono ya registrado”
-   - email inválido → error claro (no envía)
-   - teléfono y “repite teléfono” no coinciden → error claro (no envía)
+## Reglas
+- Pago real es MVP core (no placeholder)
+- Retención y liberación (MVP puede ser “manual release” admin si el PSP no soporta escrow total en v1)
+- Cancelación ultra-corta (ventana breve) + reembolso en incidencias graves (manual/admin en v1)
+- Privacidad:
+  - dirección exacta solo post-pago
 
-2) Limpieza UI/estado en app/page.tsx:
-   - Garantiza que NUNCA se muestren a la vez success y error (mutuamente excluyentes).
-   - Unifica el manejo de errores (un solo punto donde se decide el mensaje).
-   - Tras success: opcionalmente limpia campos (excepto ciudad/rol si quieres mantenerlos).
+Tareas:
+- [ ] /api/orders: crear pedido, listar pedidos del usuario
+- [ ] /api/payments: iniciar checkout, devolver URL/intent
+- [ ] /api/webhooks: procesar confirmación (pago OK)
+- [ ] UI checkout (mínima) + pantalla pedido
+- [ ] Guardar “Notas para el cocinero” en el pedido (pre-chat)
 
-3) Validación de teléfono:
-   - Teléfono es opcional.
-   - Si se rellena, exigir “repite teléfono” y que coincida.
-   - Aceptar +, espacios, guiones y números; normalizar a solo dígitos para comparar/guardar.
-   - No imponer longitud por país (solo un mínimo razonable: >= 7 dígitos).
+DoD:
+- Existe orden con estados
+- Pago confirmado por webhook cambia a PAID
+- Tras PAID se habilita chat y se revela dirección exacta cuando proceda
 
-4) Backend /api/leads (route.ts):
-   - Asegura insert explícito con los campos actuales: name, email, city, role, phone
-   - Normaliza phone en backend igual que en frontend.
-   - Maneja duplicados devolviendo status 409 y mensaje exacto:
-       - “Email ya registrado”
-       - “Teléfono ya registrado”
-   - Log interno (console.error) pero NO filtrar secretos.
+---
 
-5) Repo hygiene:
-   - Elimina/evita duplicados tipo page.tsx fuera de /app si existen y no se usan.
-   - Asegura que `npm run build` pasa en GitHub Actions y en Vercel.
+# STAGE 7 — Chat post-pago (NÚCLEO OPERATIVO)
+Condición: chat habilitado siempre que order.payment_status == PAID.
 
-Entrega:
-- PR con cambios + checklist en el PR description de las pruebas anteriores.
-## TASK 001 — End-to-end leads + duplicados (frontend+backend) sin romper build
-STATUS: TODO
-BRANCH: agent/task-001-leads-e2e
+- [ ] Modelo messages:
+  - id, order_id, sender_id, text, created_at
+- [ ] Permisos: solo comprador y cocinero del order_id pueden leer/escribir
+- [ ] UI chat dentro del detalle de pedido (texto-only)
+- [ ] Plantillas rápidas:
+  - 🌶️ Picante: …
+  - 🧂 Sin sal
+  - 🚫 Alergias: …
+  - ⏰ Hora: …
+  - 📍 Punto/Dirección exacta: …
+  - ✅ Entregado
+- [ ] El chat debe permitir “confirmación” operativa (ej. “Entregado”)
 
-SCOPE:
-- Permitido: app/page.tsx, app/api/leads/route.ts, lib/**, types/**, utils/**
-- Prohibido: runtime edge, upgrades masivos, cambios de DB sin migration
+DoD:
+- Pago confirmado ⇒ chat activo inmediato
+- Mensajes rápidos funcionan y quedan registrados
+- Nadie ajeno accede al chat
 
-GOAL:
-- Landing funciona end-to-end: inserta lead en Supabase, maneja duplicados por email/teléfono y valida teléfono opcional.
+---
 
-ACCEPTANCE:
-- [ ] Envío OK → inserta en Supabase (name, email, city, role, phone)
-- [ ] Email duplicado → HTTP 409 y mensaje EXACTO: "Email ya registrado"
-- [ ] Teléfono duplicado (si se envía) → HTTP 409 y mensaje EXACTO: "Teléfono ya registrado"
-- [ ] Email inválido → error claro en UI y NO envía
-- [ ] Teléfono opcional: si se rellena, exige repetir y que coincida (si no, NO envía)
-- [ ] Normalización de phone en frontend y backend: aceptar + espacios guiones, comparar/guardar como solo dígitos
-- [ ] `npm run build` pasa en GitHub Actions y Vercel
+# STAGE 8 — Modalidades y reglas de entrega (UX + consistencia)
+- [ ] En detalle del pedido:
+  - Si Recogida: mostrar instrucciones genéricas + acordar por chat
+  - Si Entrega: mostrar radio y tarifa; punto exacto por chat
+  - Si Comer en casa: mostrar reglas y coordinar por chat
+- [ ] Direcciones:
+  - pre-pago: solo barrio/zona
+  - post-pago: revelar exacta donde proceda
 
-NOTES:
-- UI: success y error mutuamente excluyentes (nunca ambos)
-- Tras success: limpiar campos (email/nombre/teléfonos), opcional mantener city/role
-- Backend: console.error sin filtrar secretos; devolver 409 solo para duplicados
+DoD:
+- UX coherente con logística real
+- Privacidad garantizada
+
+---
+
+# STAGE 9 — Legal mínimo (acceso público)
+- [ ] Página o enlaces a:
+  - Términos y Condiciones
+  - Política de privacidad
+- [ ] Registro/checkbox de aceptación en checkout (MVP)
+
+DoD:
+- No contradice el modelo operativo
+- Trazabilidad de aceptación
+
+---
+
+# FUERA DE ALCANCE (MVP)
+- Incentivos activos (BolsaX, Bote, Camino España) → solo “próximamente”
+- Gamificación avanzada
+- Notificaciones push perfectas (MVP: email o nada)
+- Adjuntos en chat (fotos/audio)
+- Moderación automática/IA
