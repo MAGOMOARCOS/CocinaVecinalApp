@@ -1,0 +1,35 @@
+name: Agent (PR-driven)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Agent instructions
+        run: |
+          echo "AGENT_TASKS.md:"
+          sed -n '1,200p' AGENT_TASKS.md
+
+      - name: Run agent (no auto-merge)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          echo "Agent placeholder. Will act only via PRs."
+          echo "No direct changes to main."
