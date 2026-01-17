@@ -2,13 +2,14 @@ name: Agent (PR-driven)
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
-  agent:
+  pr:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,14 +23,109 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      - name: Agent instructions
-        run: |
-          echo "AGENT_TASKS.md:"
-          sed -n '1,200p' AGENT_TASKS.md
-
-      - name: Run agent (no auto-merge)
+      - name: Create branch, implement Fase 1, open PR
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Agent placeholder. Will act only via PRs."
-          echo "No direct changes to main."
+          set -e
+          BRANCH="agent/fase1-nav-${GITHUB_RUN_ID}"
+          git checkout -b "$BRANCH"
+
+          mkdir -p app/explorar app/perfil
+
+          cat > app/layout.tsx <<'EOF'
+          import type { Metadata } from "next";
+          import Link from "next/link";
+          import "./globals.css";
+
+          export const metadata: Metadata = {
+            title: "Cocina Vecinal",
+            description: "Build limpio en Vercel (luego funcionalidades)",
+          };
+
+          export default function RootLayout({
+            children,
+          }: Readonly<{
+            children: React.ReactNode;
+          }>) {
+            return (
+              <html lang="es">
+                <body>
+                  <div style={{ maxWidth: 960, margin: "0 auto", padding: 24 }}>
+                    <header style={{ marginBottom: 16 }}>
+                      <h1 style={{ fontSize: 44, margin: 0 }}>Cocina Vecinal</h1>
+                      <p style={{ marginTop: 8, opacity: 0.8 }}>
+                        Build limpio en Vercel ✅ (luego funcionalidades)
+                      </p>
+                      <nav style={{ display: "flex", gap: 12, marginTop: 16 }}>
+                        <Link href="/">Home</Link>
+                        <Link href="/explorar">Explorar</Link>
+                        <Link href="/perfil">Perfil</Link>
+                      </nav>
+                      <hr style={{ marginTop: 16 }} />
+                    </header>
+
+                    <main>{children}</main>
+                  </div>
+                </body>
+              </html>
+            );
+          }
+          EOF
+
+          cat > app/page.tsx <<'EOF'
+          export default function Home() {
+            return (
+              <div>
+                <div
+                  style={{
+                    border: "1px solid #e5e5e5",
+                    borderRadius: 12,
+                    padding: 16,
+                    marginTop: 16,
+                  }}
+                >
+                  <strong>Estado:</strong> Reset controlado
+                </div>
+              </div>
+            );
+          }
+          EOF
+
+          cat > app/explorar/page.tsx <<'EOF'
+          export default function Explorar() {
+            return (
+              <div>
+                <h2 style={{ marginTop: 0 }}>Explorar</h2>
+                <p>Listado básico (placeholder). Aquí irá el marketplace.</p>
+              </div>
+            );
+          }
+          EOF
+
+          cat > app/perfil/page.tsx <<'EOF'
+          export default function Perfil() {
+            return (
+              <div>
+                <h2 style={{ marginTop: 0 }}>Perfil</h2>
+                <p>Área de usuario (placeholder). Aquí irá el perfil y ajustes.</p>
+              </div>
+            );
+          }
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add app/layout.tsx app/page.tsx app/explorar/page.tsx app/perfil/page.tsx
+          git commit -m "feat: fase 1 pages + navigation"
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --title "Fase 1: páginas base + navegación" \
+            --body "Implementa Home/Explorar/Perfil y navegación simple según AGENT_TASKS.md. CI debe pasar." \
+            --base main \
+            --head "$BRANCH"
+
+      - name: Build check
+        run: npm run build
