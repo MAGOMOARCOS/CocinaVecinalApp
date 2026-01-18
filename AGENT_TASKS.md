@@ -1,7 +1,7 @@
 # AGENT_TASKS — CocinaVecinalApp
 
 ## REGLAS DURAS (NO NEGOCIABLES)
-- NO romper el build: `npm run build` debe quedar OK al final.
+- NO romper el build: npm run build debe quedar OK al final.
 - Cambios mínimos y reversibles.
 - NO tocar Supabase schemas / migrations / SQL.
 - NO añadir dependencias nuevas salvo que sea imprescindible.
