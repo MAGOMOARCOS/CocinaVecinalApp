@@ -58,5 +58,12 @@ Si algo no está claro:
 
 \- NO improvisar.
 
+# Phase 1 – Base App
+
+- Asegurar que la home carga sin warnings
+- Añadir layout base (header + footer)
+- Preparar estructura para auth (sin activarla aún)
+- No romper build
+- No tocar Supabase schemas todavía
 
 
