@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       instruction:
-        description: "Instrucción extra (opcional). Si va vacío, ejecuta AGENT_TASKS.md"
+        description: "Instrucción extra (opcional)"
         required: false
         default: ""
 
@@ -15,6 +15,7 @@ permissions:
 jobs:
   agent:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,7 +29,7 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      - name: Run agent (generate patch, apply, build, PR)
+      - name: Run agent (write files, build, PR)
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           INSTRUCTION: ${{ inputs.instruction }}
@@ -42,121 +43,90 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           python3 - <<'PY'
-          import os, json, sys, urllib.request, urllib.error, subprocess
+          import os, json, sys, urllib.request, urllib.error, subprocess, pathlib
 
-          api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-          if not api_key:
-              print("ERROR: Missing OPENAI_API_KEY secret in GitHub.", file=sys.stderr)
-              sys.exit(2)
+          api_key = os.environ["OPENAI_API_KEY"]
+          instruction = os.environ.get("INSTRUCTION", "")
 
-          instruction = os.environ.get("INSTRUCTION", "").strip()
+          # Leer archivos reales que pueden tocarse
+          TARGET_FILES = ["app/layout.tsx"]
 
-          try:
-              with open("AGENT_TASKS.md", "r", encoding="utf-8") as f:
-                  tasks = f.read().strip()
-          except FileNotFoundError:
-              tasks = "No AGENT_TASKS.md found"
-
-          file_list = subprocess.check_output(["git", "ls-files"], text=True)
+          files_content = {}
+          for path in TARGET_FILES:
+              try:
+                  with open(path, "r", encoding="utf-8") as f:
+                      files_content[path] = f.read()
+              except FileNotFoundError:
+                  files_content[path] = ""
 
           system = (
               "Eres un agente de ingeniería de software.\n"
-              "Devuelve SOLO un patch en formato unified diff (git apply compatible).\n"
+              "Devuelve EXCLUSIVAMENTE un JSON con este formato:\n"
+              "{\n"
+              '  "files": {\n'
+              '    "path/archivo.tsx": "CONTENIDO COMPLETO DEL ARCHIVO"\n'
+              "  }\n"
+              "}\n\n"
               "Reglas:\n"
-              "- No incluyas secretos ni valores reales.\n"
-              "- No modifiques .github/workflows/*.\n"
-              "- Cambios mínimos para que `npm run build` pase.\n"
-              "- Si no hay nada que cambiar, devuelve un diff vacío (sin texto adicional)."
+              "- Devuelve el ARCHIVO COMPLETO, no diff.\n"
+              "- No modifiques .github/workflows.\n"
+              "- Cambios mínimos.\n"
+              "- El código debe compilar en Next.js App Router.\n"
           )
 
-          user = f"""
-          Repo file list:
-          {file_list}
-
-          AGENT_TASKS.md:
-          {tasks if tasks else "(vacío)"}
-
-          Instrucción extra (puede estar vacía):
-          {instruction if instruction else "(ninguna)"}
-
-          Objetivo: producir un patch mínimo para cumplir tareas sin romper build.
-          """
+          user = {
+              "instruction": instruction,
+              "files": files_content
+          }
 
           payload = {
               "model": "gpt-4o-mini",
               "input": [
                   {"role": "system", "content": [{"type": "input_text", "text": system}]},
-                  {"role": "user", "content": [{"type": "input_text", "text": user}]},
+                  {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user)}]},
               ],
           }
 
           req = urllib.request.Request(
               "https://api.openai.com/v1/responses",
-              data=json.dumps(payload).encode("utf-8"),
+              data=json.dumps(payload).encode(),
               headers={
                   "Authorization": f"Bearer {api_key}",
                   "Content-Type": "application/json",
               },
-              method="POST",
           )
 
-          try:
-              with urllib.request.urlopen(req) as r:
-                  raw = r.read().decode("utf-8")
-          except urllib.error.HTTPError as e:
-              body = ""
-              try:
-                  body = e.read().decode("utf-8")
-              except Exception:
-                  body = "<could not read error body>"
-              print(f"OPENAI_HTTP_ERROR: {e.code} {e.reason}", file=sys.stderr)
-              print("OPENAI_ERROR_BODY_BEGIN", file=sys.stderr)
-              print(body, file=sys.stderr)
-              print("OPENAI_ERROR_BODY_END", file=sys.stderr)
-              sys.exit(1)
+          with urllib.request.urlopen(req) as r:
+              data = json.loads(r.read().decode())
 
-          data = json.loads(raw)
-
-          out = ""
+          text = ""
           for item in data.get("output", []):
               if item.get("type") == "message":
                   for c in item.get("content", []):
                       if c.get("type") == "output_text":
-                          out += c.get("text", "")
+                          text += c.get("text", "")
 
-          patch = out.strip()
+          result = json.loads(text)
 
-          with open("agent.patch", "w", encoding="utf-8") as f:
-              f.write(patch + ("\n" if patch else ""))
+          for path, content in result.get("files", {}).items():
+              pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(content)
 
-          print("Patch length:", len(patch))
           PY
-
-          if [ -s agent.patch ]; then
-            echo "----- AGENT PATCH BEGIN -----"
-            cat agent.patch
-            echo "----- AGENT PATCH END -----"
-
-            if ! git apply --3way agent.patch; then
-              echo "ERROR: Patch did not apply even with --3way."
-              exit 1
-            fi
-          else
-            echo "Agent returned empty patch."
-          fi
 
           npm run build
 
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
-            git commit -m "chore: agent patch for tasks"
+            git commit -m "agent: apply tasks"
             git push -u origin "$BRANCH"
 
             gh pr create \
               --title "Agent: apply AGENT_TASKS.md" \
-              --body "PR generado automáticamente por Agent workflow. CI debe pasar." \
+              --body "PR generado automáticamente por el agente." \
               --base main \
               --head "$BRANCH"
           else
-            echo "No changes to commit."
+            echo "No changes"
           fi
