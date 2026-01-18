@@ -3,9 +3,10 @@ name: Agent (PR-driven) — SAFE (no API)
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [ main ]
     paths:
       - "AGENT_TASKS.md"
+      - ".github/workflows/agent.yml"
 
 permissions:
   contents: write
@@ -16,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  agent_safe:
+  agent:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -24,41 +25,107 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Create branch + marker commit
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install deps (baseline)
+        run: npm ci
+
+      - name: Prepare branch
+        id: prep
         shell: bash
         run: |
           set -euo pipefail
           BRANCH="agent/run-${{ github.run_id }}"
           git checkout -b "$BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
-          mkdir -p .github/agent-runs
-          echo "run_id=${{ github.run_id }}" > ".github/agent-runs/${{ github.run_id }}.txt"
-          echo "sha=${{ github.sha }}" >> ".github/agent-runs/${{ github.run_id }}.txt"
-          echo "event=${{ github.event_name }}" >> ".github/agent-runs/${{ github.run_id }}.txt"
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".github/agent-runs/${{ github.run_id }}.txt"
+      - name: Extract patch from AGENT_TASKS.md (optional)
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          git add .github/agent-runs
-          git -c user.name="cocinavecinal-bot" -c user.email="bot@users.noreply.github.com" \
-            commit -m "chore(agent-safe): marker run ${{ github.run_id }}"
+          python3 - << 'PY'
+          import re, pathlib, sys
+
+          p = pathlib.Path("AGENT_TASKS.md")
+          txt = p.read_text(encoding="utf-8", errors="replace")
+
+          m = re.search(r"<!--\s*AGENT_PATCH_BEGIN\s*-->(.*?)<!--\s*AGENT_PATCH_END\s*-->", txt, re.S)
+          if not m:
+            print("NO_PATCH=1")
+            pathlib.Path("agent.patch").write_text("", encoding="utf-8")
+            sys.exit(0)
+
+          patch = m.group(1).strip("\n")
+          # allow either raw diff or fenced ```diff blocks
+          patch = re.sub(r"^```diff\s*", "", patch.strip())
+          patch = re.sub(r"\s*```$", "", patch.strip())
+
+          if not patch.strip():
+            print("NO_PATCH=1")
+            pathlib.Path("agent.patch").write_text("", encoding="utf-8")
+            sys.exit(0)
+
+          pathlib.Path("agent.patch").write_text(patch + "\n", encoding="utf-8")
+          print("NO_PATCH=0")
+          PY
+
+          if grep -q "^NO_PATCH=1" <<<"$(tail -n 1 agent.patch 2>/dev/null || true)"; then
+            true
+          fi
+
+          if [ -s agent.patch ]; then
+            echo "no_patch=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "no_patch=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply patch (if present)
+        if: steps.patch.outputs.no_patch == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --whitespace=fix agent.patch
+
+      - name: Build (guardrail)
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+
+      - name: Commit changes (or marker)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+
+          if git status --porcelain | grep -q .; then
+            git add -A
+            git commit -m "agent: apply patch + build"
+          else
+            echo "No patch provided or no changes to commit." > .agent-last-run.txt
+            git add .agent-last-run.txt
+            git commit -m "agent: run (no patch provided)"
+          fi
 
       - name: Push branch
         shell: bash
         run: |
           set -euo pipefail
-          git push -u origin "agent/run-${{ github.run_id }}"
+          git push -u origin "${{ steps.prep.outputs.branch }}"
 
-      - name: Open PR (safe placeholder)
+      - name: Create PR (or reuse)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-
-          TITLE="Agent SAFE: run ${{ github.run_id }} (no API)"
-          BODY=$'✅ SAFE MODE (sin OpenAI)\n\nEste PR verifica que el pipeline del agente funciona:\n- crea rama\n- hace commit marcador\n- abre PR\n\nSiguiente paso (cuando esto pase 3 veces en verde): habilitar el agente real con API y ejecución de Phase 1.\n\nChecklist:\n- [ ] Verificar que este PR se creó automáticamente\n- [ ] Verificar que el workflow ya no falla por YAML\n- [ ] Cerrar/Mergear este PR si todo es correcto\n'
-
-          gh pr create \
-            --base main \
-            --head "agent/run-${{ github.run_id }}" \
-            --title "$TITLE" \
-            --body "$BODY"
+          TITLE="Agent run ${{ github.run_id }} (SAFE no API)"
+          BODY=$'Automated PR created by SAFE agent workflow.\n\n- If this PR contains only .agent-last-run.txt: you must add a patch to AGENT_TASKS.md between:\n  <!-- AGENT_PATCH_BEGIN --> and <!-- AGENT_PATCH_END -->\n\nNo external LLM API was used.\n'
+          gh pr create --base main --head "${{ steps.prep.outputs.branch }}" --title "$TITLE" --body "$BODY" || true
