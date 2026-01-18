@@ -2,13 +2,18 @@ name: Agent (PR-driven)
 
 on:
   workflow_dispatch:
+    inputs:
+      instruction:
+        description: "Instrucción extra (opcional). Si va vacío, ejecuta AGENT_TASKS.md"
+        required: false
+        default: ""
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  pr:
+  agent:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -23,109 +28,118 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      - name: Create branch, implement Fase 1, open PR
+      - name: Run agent (generate patch, apply, build, PR)
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          INSTRUCTION: ${{ inputs.instruction }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          BRANCH="agent/fase1-nav-${GITHUB_RUN_ID}"
+
+          # 1) Crear rama
+          BRANCH="agent/run-${GITHUB_RUN_ID}"
           git checkout -b "$BRANCH"
-
-          mkdir -p app/explorar app/perfil
-
-          cat > app/layout.tsx <<'EOF'
-          import type { Metadata } from "next";
-          import Link from "next/link";
-          import "./globals.css";
-
-          export const metadata: Metadata = {
-            title: "Cocina Vecinal",
-            description: "Build limpio en Vercel (luego funcionalidades)",
-          };
-
-          export default function RootLayout({
-            children,
-          }: Readonly<{
-            children: React.ReactNode;
-          }>) {
-            return (
-              <html lang="es">
-                <body>
-                  <div style={{ maxWidth: 960, margin: "0 auto", padding: 24 }}>
-                    <header style={{ marginBottom: 16 }}>
-                      <h1 style={{ fontSize: 44, margin: 0 }}>Cocina Vecinal</h1>
-                      <p style={{ marginTop: 8, opacity: 0.8 }}>
-                        Build limpio en Vercel ✅ (luego funcionalidades)
-                      </p>
-                      <nav style={{ display: "flex", gap: 12, marginTop: 16 }}>
-                        <Link href="/">Home</Link>
-                        <Link href="/explorar">Explorar</Link>
-                        <Link href="/perfil">Perfil</Link>
-                      </nav>
-                      <hr style={{ marginTop: 16 }} />
-                    </header>
-
-                    <main>{children}</main>
-                  </div>
-                </body>
-              </html>
-            );
-          }
-          EOF
-
-          cat > app/page.tsx <<'EOF'
-          export default function Home() {
-            return (
-              <div>
-                <div
-                  style={{
-                    border: "1px solid #e5e5e5",
-                    borderRadius: 12,
-                    padding: 16,
-                    marginTop: 16,
-                  }}
-                >
-                  <strong>Estado:</strong> Reset controlado
-                </div>
-              </div>
-            );
-          }
-          EOF
-
-          cat > app/explorar/page.tsx <<'EOF'
-          export default function Explorar() {
-            return (
-              <div>
-                <h2 style={{ marginTop: 0 }}>Explorar</h2>
-                <p>Listado básico (placeholder). Aquí irá el marketplace.</p>
-              </div>
-            );
-          }
-          EOF
-
-          cat > app/perfil/page.tsx <<'EOF'
-          export default function Perfil() {
-            return (
-              <div>
-                <h2 style={{ marginTop: 0 }}>Perfil</h2>
-                <p>Área de usuario (placeholder). Aquí irá el perfil y ajustes.</p>
-              </div>
-            );
-          }
-          EOF
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add app/layout.tsx app/page.tsx app/explorar/page.tsx app/perfil/page.tsx
-          git commit -m "feat: fase 1 pages + navigation"
-          git push -u origin "$BRANCH"
+          # 2) Construir prompt desde AGENT_TASKS.md + instrucción opcional
+          TASKS="$(cat AGENT_TASKS.md 2>/dev/null || echo 'No AGENT_TASKS.md found')"
 
-          gh pr create \
-            --title "Fase 1: páginas base + navegación" \
-            --body "Implementa Home/Explorar/Perfil y navegación simple según AGENT_TASKS.md. CI debe pasar." \
-            --base main \
-            --head "$BRANCH"
+          # 3) Generar DIFF con OpenAI (sin volcar secretos)
+          python3 - <<'PY'
+          import os, json, subprocess, textwrap, sys, urllib.request
 
-      - name: Build check
-        run: npm run build
+          api_key = os.environ.get("OPENAI_API_KEY","").strip()
+          if not api_key:
+            print("ERROR: Missing OPENAI_API_KEY secret in GitHub.", file=sys.stderr)
+            sys.exit(2)
+
+          instruction = os.environ.get("INSTRUCTION","").strip()
+          tasks = os.popen("cat AGENT_TASKS.md 2>/dev/null").read().strip()
+
+          # Lista de archivos (para dar contexto sin mandar el repo entero)
+          file_list = os.popen("git ls-files").read()
+
+          system = """Eres un agente de ingeniería de software.
+          Devuelve SOLO un patch en formato unified diff (git apply compatible).
+          Reglas:
+          - No incluyas secretos ni valores reales.
+          - No modifiques .github/workflows/*.
+          - Si necesitas env vars, documenta en .env.example y usa process.env.
+          - Cambios mínimos para que `npm run build` pase.
+          - Si no hay nada que cambiar, devuelve un diff vacío (sin texto adicional)."""
+
+          user = f"""
+          Repo file list:
+          {file_list}
+
+          AGENT_TASKS.md:
+          {tasks if tasks else "(vacío)"}
+
+          Instrucción extra (puede estar vacía):
+          {instruction if instruction else "(ninguna)"}
+
+          Objetivo: producir un patch mínimo para cumplir tareas sin romper build.
+          """
+
+          payload = {
+            "model": "gpt-4o-mini",
+            "input": [
+              {"role":"system","content":[{"type":"text","text":system}]},
+              {"role":"user","content":[{"type":"text","text":user}]}
+            ]
+          }
+
+          req = urllib.request.Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+              "Authorization": f"Bearer {api_key}",
+              "Content-Type": "application/json"
+            },
+            method="POST"
+          )
+
+          with urllib.request.urlopen(req) as r:
+            data = json.loads(r.read().decode("utf-8"))
+
+          # Extraer texto final
+          out = ""
+          for item in data.get("output", []):
+            if item.get("type") == "message":
+              for c in item.get("content", []):
+                if c.get("type") == "output_text":
+                  out += c.get("text","")
+
+          patch = out.strip()
+
+          # Guardar patch (puede ser vacío)
+          with open("agent.patch","w",encoding="utf-8") as f:
+            f.write(patch + ("\n" if patch else ""))
+
+          print("Patch length:", len(patch))
+          PY
+
+          # 4) Aplicar patch (si hay)
+          if [ -s agent.patch ]; then
+            git apply agent.patch
+          else
+            echo "Agent returned empty patch."
+          fi
+
+          # 5) Build check
+          npm run build
+
+          # 6) Commit y PR (solo si hay cambios)
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "chore: agent patch for tasks"
+            git push -u origin "$BRANCH"
+            gh pr create \
+              --title "Agent: apply AGENT_TASKS.md" \
+              --body "PR generado automáticamente por Agent workflow. CI debe pasar." \
+              --base main \
+              --head "$BRANCH"
+          else
+            echo "No changes to commit."
+          fi
