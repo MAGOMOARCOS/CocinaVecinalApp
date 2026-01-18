@@ -1,33 +1,32 @@
-# Phase 1 — Base App (NO romper build)
+# AGENT_TASKS — CocinaVecinalApp
 
-## Objetivo
-Dejar una base mínima limpia y estable para continuar fases posteriores sin fricción.
-
-## Reglas (obligatorias)
-- NO romper el build (CI debe quedar en verde).
+## REGLAS DURAS (NO NEGOCIABLES)
+- NO romper el build: `npm run build` debe quedar OK al final.
+- Cambios mínimos y reversibles.
 - NO tocar Supabase schemas / migrations / SQL.
-- NO activar Auth todavía (solo preparar estructura).
-- Mantener cambios pequeños y revisables.
-- Si falta una variable de entorno, NO fallback a strings hardcodeados: documentar y usar env vars.
+- NO añadir dependencias nuevas salvo que sea imprescindible.
+- NO tocar workflows de GitHub Actions (.github/workflows).
+- NO añadir secretos ni claves en código. Usar solo env vars ya existentes.
+- Mantener Next.js App Router.
 
-## Tareas
-1) Home sin warnings
-- Asegurar que la Home renderiza sin errores ni warnings en consola (dev/build).
-- Evitar imports no usados, keys de React, etc.
+## PHASE 1 — Base App (MVP base estable)
 
-2) Layout base
-- Implementar layout común con:
-  - Header: logo/texto “Cocina Vecinal” + links (Home / Explorar / Perfil)
-  - Footer: texto simple (copyright / enlaces básicos)
-- Debe aplicarse a todas las rutas existentes.
+### TASK 1 — Layout base sin warnings
+Objetivo:
+- Asegurar que la home carga sin warnings relevantes.
+- Añadir un layout base global con Header + Footer.
+- Mantener el contenido existente de la home (no borrar texto ni links actuales).
 
-3) Preparar estructura para Auth (sin activarla)
-- Crear estructura de carpetas/componentes para auth (por ejemplo `app/(auth)/...` o `components/auth/...`)
-- Crear un “placeholder” de sesión (por ejemplo `getSession()` que devuelva null) sin conectar aún.
-- No debe requerir claves nuevas ni romper despliegues.
+Requisitos técnicos:
+- Implementar Header y Footer como componentes simples en `app/` (o `components/` si ya existe).
+- Aplicar el layout desde `app/layout.tsx` (App Router).
+- Estilos mínimos (sin librerías nuevas). Si no hay CSS, usa clases simples o inline.
 
-## Criterios de aceptación
-- `npm run build` OK en CI.
-- Vercel Production OK.
-- Navegación funciona (Home/Explorar/Perfil).
-- No hay warnings relevantes en consola.
+Criterio de aceptación:
+- `npm run build` OK.
+- La home se ve con Header arriba y Footer abajo.
+- Sin warnings de React por `useEffect`, keys, o HTML inválido.
+
+Entrega:
+- Hacer commit con mensaje: `feat: base layout header footer`
+- Abrir PR contra `main` con resumen de cambios.
