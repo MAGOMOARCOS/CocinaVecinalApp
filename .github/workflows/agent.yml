@@ -1,296 +1,64 @@
-name: Agent (PR-driven)
+name: Agent (PR-driven) — SAFE (no API)
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
       - "AGENT_TASKS.md"
-
-  workflow_dispatch:
-    inputs:
-      instruction:
-        description: "Instrucción extra (opcional)"
-        required: false
-        default: ""
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  group: agent-pr-driven-main
-  cancel-in-progress: false
+  group: agent-safe-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  agent:
+  agent_safe:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # Memoria simple (evita repetir errores caros)
-      - name: Restore agent state cache
-        uses: actions/cache@v4
-        with:
-          path: .agent/state.json
-          key: agent-state-main
-          restore-keys: |
-            agent-state-
+      - name: Create branch + marker commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH="agent/run-${{ github.run_id }}"
+          git checkout -b "$BRANCH"
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
+          mkdir -p .github/agent-runs
+          echo "run_id=${{ github.run_id }}" > ".github/agent-runs/${{ github.run_id }}.txt"
+          echo "sha=${{ github.sha }}" >> ".github/agent-runs/${{ github.run_id }}.txt"
+          echo "event=${{ github.event_name }}" >> ".github/agent-runs/${{ github.run_id }}.txt"
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".github/agent-runs/${{ github.run_id }}.txt"
 
-      - name: Install deps
-        run: npm ci
+          git add .github/agent-runs
+          git -c user.name="cocinavecinal-bot" -c user.email="bot@users.noreply.github.com" \
+            commit -m "chore(agent-safe): marker run ${{ github.run_id }}"
 
-      - name: Run agent (plan -> changes -> build -> PR -> comment)
+      - name: Push branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push -u origin "agent/run-${{ github.run_id }}"
+
+      - name: Open PR (safe placeholder)
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          INSTRUCTION: ${{ inputs.instruction }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          BRANCH="agent/run-${GITHUB_RUN_ID}"
-          git checkout -b "$BRANCH"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          TITLE="Agent SAFE: run ${{ github.run_id }} (no API)"
+          BODY=$'✅ SAFE MODE (sin OpenAI)\n\nEste PR verifica que el pipeline del agente funciona:\n- crea rama\n- hace commit marcador\n- abre PR\n\nSiguiente paso (cuando esto pase 3 veces en verde): habilitar el agente real con API y ejecución de Phase 1.\n\nChecklist:\n- [ ] Verificar que este PR se creó automáticamente\n- [ ] Verificar que el workflow ya no falla por YAML\n- [ ] Cerrar/Mergear este PR si todo es correcto\n'
 
-          python3 - <<'PY'
-          import os, json, sys, pathlib, urllib.request, urllib.error, subprocess, datetime
-
-          def now_iso():
-              return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
-          def read_text(path):
-              try:
-                  return pathlib.Path(path).read_text(encoding="utf-8")
-              except FileNotFoundError:
-                  return ""
-
-          def write_text(path, content):
-              p = pathlib.Path(path)
-              p.parent.mkdir(parents=True, exist_ok=True)
-              p.write_text(content, encoding="utf-8")
-
-          def safe_exit(msg, code=1):
-              print(msg, file=sys.stderr)
-              sys.exit(code)
-
-          state_path = pathlib.Path(".agent/state.json")
-          state = {}
-          if state_path.exists():
-              try:
-                  state = json.loads(state_path.read_text(encoding="utf-8"))
-              except Exception:
-                  state = {}
-
-          state.setdefault("runs_total", 0)
-          state.setdefault("runs_today", 0)
-          state.setdefault("last_run_date", "")
-          state.setdefault("last_error", "")
-          state.setdefault("same_error_streak", 0)
-          state.setdefault("openai_calls_total", 0)
-
-          today = datetime.date.today().isoformat()
-          if state.get("last_run_date") != today:
-              state["runs_today"] = 0
-              state["same_error_streak"] = 0
-              state["last_run_date"] = today
-
-          state["runs_total"] += 1
-          state["runs_today"] += 1
-
-          if state.get("same_error_streak", 0) >= 2 and state.get("last_error"):
-              safe_exit(f"STOP: mismo error repetido 2 veces ({state['last_error']}). Evito más coste.", 2)
-
-          api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
-          if not api_key:
-              state["last_error"] = "MISSING_OPENAI_API_KEY"
-              state["same_error_streak"] = state.get("same_error_streak", 0) + 1
-              write_text(state_path, json.dumps(state, indent=2))
-              safe_exit("ERROR: Falta el secret OPENAI_API_KEY en GitHub.", 2)
-
-          extra_instruction = (os.environ.get("INSTRUCTION") or "").strip()
-          agent_tasks = read_text("AGENT_TASKS.md").strip()
-          if not agent_tasks:
-              state["last_error"] = "MISSING_AGENT_TASKS"
-              state["same_error_streak"] = state.get("same_error_streak", 0) + 1
-              write_text(state_path, json.dumps(state, indent=2))
-              safe_exit("ERROR: AGENT_TASKS.md está vacío o no existe.", 2)
-
-          ALLOW_PREFIXES = ("app/", "components/")
-          DENY_PREFIXES = (".github/",)
-          DENY_EXACT = ("AGENT_TASKS.md",)
-
-          context_files = [
-              "app/layout.tsx",
-              "app/page.tsx",
-              "app/globals.css",
-              "components/Header.tsx",
-              "components/Footer.tsx",
-          ]
-          current_files = {p: read_text(p) for p in context_files}
-
-          try:
-              file_list = subprocess.check_output(["git", "ls-files"], text=True)
-          except Exception:
-              file_list = ""
-
-          system = (
-              "Eres un agente de ingeniería para un repo Next.js (App Router).\n"
-              "Devuelve SOLO JSON válido (sin markdown) con:\n"
-              "{ \"files\": { \"ruta\": \"CONTENIDO_COMPLETO\" } }\n"
-              "Reglas:\n"
-              "- ARCHIVOS COMPLETOS (no diff).\n"
-              "- Cambios mínimos para Phase 1.\n"
-              "- No tocar .github/ ni AGENT_TASKS.md.\n"
-              "- Solo app/ y components/.\n"
-              "- Si no hace falta, devuelve {\"files\":{}}.\n"
-          )
-
-          user = {
-              "repo_file_list": file_list,
-              "agent_tasks_md": agent_tasks,
-              "extra_instruction": extra_instruction if extra_instruction else "(none)",
-              "current_files": current_files,
-              "scope": {
-                  "allowed_prefixes": list(ALLOW_PREFIXES),
-                  "denied_prefixes": list(DENY_PREFIXES),
-                  "denied_exact": list(DENY_EXACT),
-              },
-          }
-
-          payload = {
-              "model": "gpt-4o-mini",
-              "input": [
-                  {"role": "system", "content": [{"type": "input_text", "text": system}]},
-                  {"role": "user", "content": [{"type": "input_text", "text": json.dumps(user)}]},
-              ],
-          }
-
-          req = urllib.request.Request(
-              "https://api.openai.com/v1/responses",
-              data=json.dumps(payload).encode("utf-8"),
-              headers={
-                  "Authorization": f"Bearer {api_key}",
-                  "Content-Type": "application/json",
-              },
-              method="POST",
-          )
-
-          state["openai_calls_total"] += 1
-
-          try:
-              with urllib.request.urlopen(req) as r:
-                  data = json.loads(r.read().decode("utf-8"))
-          except urllib.error.HTTPError as e:
-              body = ""
-              try:
-                  body = e.read().decode("utf-8")
-              except Exception:
-                  body = "<could not read error body>"
-              state["last_error"] = f"OPENAI_HTTP_{e.code}"
-              state["same_error_streak"] = state.get("same_error_streak", 0) + 1
-              write_text(state_path, json.dumps(state, indent=2))
-              print("OPENAI_ERROR_BODY_BEGIN", file=sys.stderr)
-              print(body, file=sys.stderr)
-              print("OPENAI_ERROR_BODY_END", file=sys.stderr)
-              safe_exit(f"ERROR: OpenAI HTTP {e.code} {e.reason}", 1)
-
-          text = ""
-          for item in data.get("output", []):
-              if item.get("type") == "message":
-                  for c in item.get("content", []):
-                      if c.get("type") == "output_text":
-                          text += c.get("text", "")
-          text = text.strip()
-
-          try:
-              result = json.loads(text) if text else {"files": {}}
-          except json.JSONDecodeError:
-              state["last_error"] = "MODEL_INVALID_JSON"
-              state["same_error_streak"] = state.get("same_error_streak", 0) + 1
-              write_text(state_path, json.dumps(state, indent=2))
-              print("MODEL_OUTPUT_BEGIN", file=sys.stderr)
-              print(text, file=sys.stderr)
-              print("MODEL_OUTPUT_END", file=sys.stderr)
-              safe_exit("ERROR: El modelo no devolvió JSON válido.", 1)
-
-          files = result.get("files", {})
-          if not isinstance(files, dict):
-              state["last_error"] = "MODEL_BAD_SCHEMA"
-              state["same_error_streak"] = state.get("same_error_streak", 0) + 1
-              write_text(state_path, json.dumps(state, indent=2))
-              safe_exit("ERROR: El JSON debe contener un objeto 'files'.", 1)
-
-          for path in files.keys():
-              if path in DENY_EXACT:
-                  safe_exit(f"ERROR: Ruta prohibida: {path}", 1)
-              if path.startswith(DENY_PREFIXES):
-                  safe_exit(f"ERROR: Prefijo prohibido: {path}", 1)
-              if not path.startswith(ALLOW_PREFIXES):
-                  safe_exit(f"ERROR: Fuera de alcance (solo app/ y components/): {path}", 1)
-
-          for path, content in files.items():
-              write_text(path, content)
-
-          state["last_error"] = ""
-          state["same_error_streak"] = 0
-          state["last_run_at"] = now_iso()
-          state["last_written_files"] = sorted(list(files.keys()))
-          write_text(state_path, json.dumps(state, indent=2))
-
-          print("WROTE_FILES:", ", ".join(sorted(files.keys())) if files else "(none)")
-          PY
-
-          npm run build
-
-          if [ -n "$(git status --porcelain)" ]; then
-            git add -A
-            git commit -m "agent: Phase 1 changes"
-            git push -u origin "$BRANCH"
-
-            PR_URL="$(gh pr create \
-              --title "Agent: Phase 1 (AGENT_TASKS.md)" \
-              --body "PR generado automáticamente por el agente. Build verificado." \
-              --base main \
-              --head "$BRANCH" \
-              --json url \
-              --jq .url)"
-
-            WROTE="$(python3 -c "import json;print(', '.join(json.load(open('.agent/state.json')).get('last_written_files', [])) or '(none)')")"
-            RUNS_TODAY="$(python3 -c "import json;print(json.load(open('.agent/state.json')).get('runs_today', 0))")"
-            CALLS_TOTAL="$(python3 -c "import json;print(json.load(open('.agent/state.json')).get('openai_calls_total', 0))")"
-
-            BODY="$(cat <<EOF
-✅ **Agent run completed**
-- **Branch:** \`$BRANCH\`
-- **Build:** PASS (\`npm run build\`)
-- **Files written:** $WROTE
-- **Runs today:** $RUNS_TODAY
-- **OpenAI calls total (agent memory):** $CALLS_TOTAL
-EOF
-            )"
-
-            gh pr comment "$PR_URL" --body "$BODY"
-            echo "PR created: $PR_URL"
-          else
-            echo "No changes"
-          fi
-
-      - name: Save agent state cache
-        if: always()
-        uses: actions/cache@v4
-        with:
-          path: .agent/state.json
-          key: agent-state-main-${{ github.run_id }}
-          restore-keys: |
-            agent-state-main
-            agent-state-
+          gh pr create \
+            --base main \
+            --head "agent/run-${{ github.run_id }}" \
+            --title "$TITLE" \
+            --body "$BODY"
