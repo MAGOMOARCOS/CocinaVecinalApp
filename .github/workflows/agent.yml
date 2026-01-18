@@ -3,10 +3,8 @@ name: Agent (PR-driven) — SAFE (no API)
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
     paths:
       - "AGENT_TASKS.md"
-      - ".github/workflows/agent.yml"
 
 permissions:
   contents: write
@@ -19,31 +17,14 @@ concurrency:
 jobs:
   agent:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Install deps (baseline)
-        run: npm ci
-
-      - name: Prepare branch
-        id: prep
-        shell: bash
-        run: |
-          set -euo pipefail
-          BRANCH="agent/run-${{ github.run_id }}"
-          git checkout -b "$BRANCH"
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-
-      - name: Extract patch from AGENT_TASKS.md (optional)
+      - name: Extract patch from AGENT_TASKS.md (only fenced ```diff)
         id: patch
         shell: bash
         run: |
@@ -51,81 +32,109 @@ jobs:
 
           python3 - << 'PY'
           import re, pathlib, sys
-
           p = pathlib.Path("AGENT_TASKS.md")
+          if not p.exists():
+              print("has_patch=false")
+              sys.exit(0)
+
           txt = p.read_text(encoding="utf-8", errors="replace")
 
-          m = re.search(r"<!--\s*AGENT_PATCH_BEGIN\s*-->(.*?)<!--\s*AGENT_PATCH_END\s*-->", txt, re.S)
+          m = re.search(r"```diff\\s*(.*?)\\s*```", txt, flags=re.S)
           if not m:
-            print("NO_PATCH=1")
-            pathlib.Path("agent.patch").write_text("", encoding="utf-8")
-            sys.exit(0)
+              print("has_patch=false")
+              sys.exit(0)
 
-          patch = m.group(1).strip("\n")
-          # allow either raw diff or fenced ```diff blocks
-          patch = re.sub(r"^```diff\s*", "", patch.strip())
-          patch = re.sub(r"\s*```$", "", patch.strip())
-
-          if not patch.strip():
-            print("NO_PATCH=1")
-            pathlib.Path("agent.patch").write_text("", encoding="utf-8")
-            sys.exit(0)
-
-          pathlib.Path("agent.patch").write_text(patch + "\n", encoding="utf-8")
-          print("NO_PATCH=0")
+          diff = m.group(1).rstrip() + "\n"
+          pathlib.Path("agent.patch").write_text(diff, encoding="utf-8")
+          print("has_patch=true")
           PY
 
-          if grep -q "^NO_PATCH=1" <<<"$(tail -n 1 agent.patch 2>/dev/null || true)"; then
-            true
-          fi
+          HAS_PATCH="$(python3 -c "import pathlib; print('true' if pathlib.Path('agent.patch').exists() else 'false')")"
+          echo "has_patch=${HAS_PATCH}" >> "$GITHUB_OUTPUT"
 
-          if [ -s agent.patch ]; then
-            echo "no_patch=0" >> "$GITHUB_OUTPUT"
-          else
-            echo "no_patch=1" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Apply patch (if present)
-        if: steps.patch.outputs.no_patch == '0'
+      - name: Validate patch (fail with clear message if invalid)
+        if: steps.patch.outputs.has_patch == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          git apply --whitespace=fix agent.patch
+          echo "Validating agent.patch..."
+          if ! git apply --check agent.patch; then
+            echo ""
+            echo "❌ AGENT_TASKS.md contiene un bloque ```diff``` pero NO es un patch válido."
+            echo "   Solución: genera el diff con 'git diff' (no a mano) y pégalo dentro de ```diff ...```."
+            echo ""
+            echo "---- Primeras 120 líneas del patch ----"
+            nl -ba agent.patch | sed -n '1,120p'
+            echo "--------------------------------------"
+            exit 1
+          fi
+          echo "✅ Patch válido."
 
-      - name: Build (guardrail)
+      - name: Create working branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          BR="agent/run-${GITHUB_RUN_ID}"
+          git checkout -b "$BR"
+          echo "BRANCH=$BR" >> "$GITHUB_ENV"
+
+      - name: Apply patch (optional)
+        if: steps.patch.outputs.has_patch == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply agent.patch
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build (sanity)
         shell: bash
         run: |
           set -euo pipefail
           npm run build
 
-      - name: Commit changes (or marker)
+      - name: Commit (only if changes)
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "github-actions"
-          git config user.email "github-actions@users.noreply.github.com"
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Agent SAFE: apply tasks/patch and build"
 
-          if git status --porcelain | grep -q .; then
-            git add -A
-            git commit -m "agent: apply patch + build"
-          else
-            echo "No patch provided or no changes to commit." > .agent-last-run.txt
-            git add .agent-last-run.txt
-            git commit -m "agent: run (no patch provided)"
+      - name: Open PR (only if commit exists)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! git log -1 --pretty=%B | grep -q "Agent SAFE:"; then
+            echo "No agent commit; skipping PR."
+            exit 0
           fi
 
-      - name: Push branch
-        shell: bash
-        run: |
-          set -euo pipefail
-          git push -u origin "${{ steps.prep.outputs.branch }}"
+          git push -u origin "$BRANCH"
 
-      - name: Create PR (or reuse)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          TITLE="Agent run ${{ github.run_id }} (SAFE no API)"
-          BODY=$'Automated PR created by SAFE agent workflow.\n\n- If this PR contains only .agent-last-run.txt: you must add a patch to AGENT_TASKS.md between:\n  <!-- AGENT_PATCH_BEGIN --> and <!-- AGENT_PATCH_END -->\n\nNo external LLM API was used.\n'
-          gh pr create --base main --head "${{ steps.prep.outputs.branch }}" --title "$TITLE" --body "$BODY" || true
+          # Crea PR (si ya existe, no rompe)
+          gh pr create \
+            --title "Agent run $GITHUB_RUN_ID (SAFE no API)" \
+            --body "Automated SAFE run. If a ```diff``` patch exists in AGENT_TASKS.md it was applied; build was executed." \
+            --base main \
+            --head "$BRANCH" || true
