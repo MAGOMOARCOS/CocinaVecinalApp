@@ -3,7 +3,7 @@
 ## REGLAS DURAS (NO NEGOCIABLES)
 - NO romper el build: npm run build debe quedar OK al final.
 - Cambios mínimos y reversibles.
-- NO tocar Supabase schemas / migrations / SQL.
+- NO tocar Supabase schemas / migrations / SQL. 
 - NO añadir dependencias nuevas salvo que sea imprescindible.
 - NO tocar workflows de GitHub Actions (.github/workflows).
 - NO añadir secretos ni claves en código. Usar solo env vars ya existentes.
