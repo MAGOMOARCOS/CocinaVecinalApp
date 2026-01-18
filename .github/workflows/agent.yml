@@ -135,13 +135,21 @@ jobs:
 
           print("Patch length:", len(patch))
           PY
+ # 3)
+         if [ -s agent.patch ]; then
+  echo "----- AGENT PATCH BEGIN -----"
+  cat agent.patch
+  echo "----- AGENT PATCH END -----"
 
-          # 3) Aplicar patch (si hay)
-          if [ -s agent.patch ]; then
-            git apply agent.patch
-          else
-            echo "Agent returned empty patch."
-          fi
+  # Intento robusto (3-way)
+  if ! git apply --3way agent.patch; then
+    echo "ERROR: Patch did not apply even with --3way."
+    exit 1
+  fi
+else
+  echo "Agent returned empty patch."
+fi
+
 
           # 4) Build check
           npm run build
