@@ -1,6 +1,11 @@
 name: Agent (PR-driven)
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "AGENT_TASKS.md"
   workflow_dispatch:
     inputs:
       instruction:
@@ -43,40 +48,81 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           python3 - <<'PY'
-          import os, json, sys, urllib.request, urllib.error, subprocess, pathlib
+          import os, json, sys, urllib.request, urllib.error, pathlib, subprocess
 
-          api_key = os.environ["OPENAI_API_KEY"]
-          instruction = os.environ.get("INSTRUCTION", "")
+          # --- Secrets / inputs ---
+          api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+          if not api_key:
+              print("ERROR: Missing OPENAI_API_KEY secret in GitHub.", file=sys.stderr)
+              sys.exit(2)
 
-          # Leer archivos reales que pueden tocarse
-          TARGET_FILES = ["app/layout.tsx"]
+          instruction = (os.environ.get("INSTRUCTION") or "").strip()
+
+          # --- Read AGENT_TASKS.md (source of truth) ---
+          try:
+              with open("AGENT_TASKS.md", "r", encoding="utf-8") as f:
+                  agent_tasks = f.read().strip()
+          except FileNotFoundError:
+              agent_tasks = ""
+
+          # --- Collect limited real file context to avoid hallucinations ---
+          # Allow the agent to edit/create in these prefixes only:
+          ALLOW_PREFIXES = ("app/", "components/")
+          # Never allow these:
+          DENY_PREFIXES = (".github/",)
+
+          # Provide the model with the current content of key files (if they exist)
+          CONTEXT_FILES = [
+              "app/layout.tsx",
+              "app/page.tsx",
+              "app/globals.css",
+              "components/Header.tsx",
+              "components/Footer.tsx",
+          ]
 
           files_content = {}
-          for path in TARGET_FILES:
+          for p in CONTEXT_FILES:
               try:
-                  with open(path, "r", encoding="utf-8") as f:
-                      files_content[path] = f.read()
+                  with open(p, "r", encoding="utf-8") as f:
+                      files_content[p] = f.read()
               except FileNotFoundError:
-                  files_content[path] = ""
+                  # Keep absent files as empty so model can create them if needed
+                  files_content[p] = ""
+
+          # Also give a repo file list for orientation (no file contents, just names)
+          try:
+              file_list = subprocess.check_output(["git", "ls-files"], text=True)
+          except Exception:
+              file_list = ""
 
           system = (
-              "Eres un agente de ingeniería de software.\n"
-              "Devuelve EXCLUSIVAMENTE un JSON con este formato:\n"
+              "Eres un agente de ingeniería de software para un repo Next.js (App Router).\n"
+              "Devuelve EXCLUSIVAMENTE un JSON válido (sin markdown) con este formato:\n"
               "{\n"
-              '  "files": {\n'
-              '    "path/archivo.tsx": "CONTENIDO COMPLETO DEL ARCHIVO"\n'
+              '  \"files\": {\n'
+              '    \"ruta/archivo.tsx\": \"CONTENIDO COMPLETO DEL ARCHIVO\",\n'
+              '    \"ruta/otro.css\": \"CONTENIDO COMPLETO\"\n'
               "  }\n"
               "}\n\n"
-              "Reglas:\n"
-              "- Devuelve el ARCHIVO COMPLETO, no diff.\n"
-              "- No modifiques .github/workflows.\n"
-              "- Cambios mínimos.\n"
-              "- El código debe compilar en Next.js App Router.\n"
+              "Reglas estrictas:\n"
+              "- Devuelve ARCHIVOS COMPLETOS, no diff.\n"
+              "- Cambios mínimos para cumplir AGENT_TASKS.md Phase 1.\n"
+              "- No rompas el build: debe pasar `npm run build`.\n"
+              "- No toques Supabase schemas.\n"
+              "- NO modifiques nada bajo .github/.\n"
+              "- Puedes crear/modificar solo rutas bajo app/ y components/.\n"
           )
 
           user = {
-              "instruction": instruction,
-              "files": files_content
+              "repo_file_list": file_list,
+              "agent_tasks_md": agent_tasks,
+              "extra_instruction": instruction,
+              "current_files": files_content,
+              "scope": {
+                  "allowed_prefixes": list(ALLOW_PREFIXES),
+                  "denied_prefixes": list(DENY_PREFIXES),
+                  "note": "Solo app/ y components/; nada de .github/ ni cambios fuera de alcance."
+              }
           }
 
           payload = {
@@ -89,16 +135,30 @@ jobs:
 
           req = urllib.request.Request(
               "https://api.openai.com/v1/responses",
-              data=json.dumps(payload).encode(),
+              data=json.dumps(payload).encode("utf-8"),
               headers={
                   "Authorization": f"Bearer {api_key}",
                   "Content-Type": "application/json",
               },
+              method="POST",
           )
 
-          with urllib.request.urlopen(req) as r:
-              data = json.loads(r.read().decode())
+          try:
+              with urllib.request.urlopen(req) as r:
+                  data = json.loads(r.read().decode("utf-8"))
+          except urllib.error.HTTPError as e:
+              body = ""
+              try:
+                  body = e.read().decode("utf-8")
+              except Exception:
+                  body = "<could not read error body>"
+              print(f"OPENAI_HTTP_ERROR: {e.code} {e.reason}", file=sys.stderr)
+              print("OPENAI_ERROR_BODY_BEGIN", file=sys.stderr)
+              print(body, file=sys.stderr)
+              print("OPENAI_ERROR_BODY_END", file=sys.stderr)
+              sys.exit(1)
 
+          # Extract assistant plain text
           text = ""
           for item in data.get("output", []):
               if item.get("type") == "message":
@@ -106,25 +166,52 @@ jobs:
                       if c.get("type") == "output_text":
                           text += c.get("text", "")
 
-          result = json.loads(text)
+          text = text.strip()
+          if not text:
+              print("ERROR: Empty model output", file=sys.stderr)
+              sys.exit(1)
 
-          for path, content in result.get("files", {}).items():
+          # Parse JSON result
+          try:
+              result = json.loads(text)
+          except json.JSONDecodeError:
+              print("ERROR: Model did not return valid JSON.", file=sys.stderr)
+              print("MODEL_OUTPUT_BEGIN", file=sys.stderr)
+              print(text, file=sys.stderr)
+              print("MODEL_OUTPUT_END", file=sys.stderr)
+              sys.exit(1)
+
+          files = result.get("files", {})
+          if not isinstance(files, dict):
+              print("ERROR: JSON must contain 'files' object.", file=sys.stderr)
+              sys.exit(1)
+
+          # Enforce path allow/deny rules before writing anything
+          for path in files.keys():
+              if path.startswith(DENY_PREFIXES):
+                  raise SystemExit(f"ERROR: Denied path in output: {path}")
+              if not path.startswith(ALLOW_PREFIXES):
+                  raise SystemExit(f"ERROR: Path outside allowed prefixes (app/, components/): {path}")
+
+          # Write files
+          for path, content in files.items():
               pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
               with open(path, "w", encoding="utf-8") as f:
                   f.write(content)
 
+          print("Wrote files:", ", ".join(sorted(files.keys())))
           PY
 
           npm run build
 
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
-            git commit -m "agent: apply tasks"
+            git commit -m "agent: apply AGENT_TASKS.md Phase 1"
             git push -u origin "$BRANCH"
 
             gh pr create \
-              --title "Agent: apply AGENT_TASKS.md" \
-              --body "PR generado automáticamente por el agente." \
+              --title "Agent: Phase 1 (AGENT_TASKS.md)" \
+              --body "PR generado automáticamente por el agente a partir de AGENT_TASKS.md (Phase 1). Build verificado." \
               --base main \
               --head "$BRANCH"
           else
