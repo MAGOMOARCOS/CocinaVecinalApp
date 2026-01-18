@@ -1,5 +1,5 @@
 # AGENT_TASKS — CocinaVecinalApp
-
+ 
 ## REGLAS DURAS (NO NEGOCIABLES)
 - NO romper el build: npm run build debe quedar OK al final.
 - Cambios mínimos y reversibles.
