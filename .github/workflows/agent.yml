@@ -34,17 +34,15 @@ jobs:
           INSTRUCTION: ${{ inputs.instruction }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -e
+          set -euo pipefail
 
-          # 1) Crear rama
           BRANCH="agent/run-${GITHUB_RUN_ID}"
           git checkout -b "$BRANCH"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 2) Generar DIFF con OpenAI (sin volcar secretos)
           python3 - <<'PY'
-          import os, json, sys, urllib.request, urllib.error
+          import os, json, sys, urllib.request, urllib.error, subprocess
 
           api_key = os.environ.get("OPENAI_API_KEY", "").strip()
           if not api_key:
@@ -59,7 +57,6 @@ jobs:
           except FileNotFoundError:
               tasks = "No AGENT_TASKS.md found"
 
-          import subprocess
           file_list = subprocess.check_output(["git", "ls-files"], text=True)
 
           system = (
@@ -68,7 +65,6 @@ jobs:
               "Reglas:\n"
               "- No incluyas secretos ni valores reales.\n"
               "- No modifiques .github/workflows/*.\n"
-              "- Si necesitas env vars, documenta en .env.example y usa process.env.\n"
               "- Cambios mínimos para que `npm run build` pase.\n"
               "- Si no hay nada que cambiar, devuelve un diff vacío (sin texto adicional)."
           )
@@ -135,30 +131,27 @@ jobs:
 
           print("Patch length:", len(patch))
           PY
- # 3)
-         if [ -s agent.patch ]; then
-  echo "----- AGENT PATCH BEGIN -----"
-  cat agent.patch
-  echo "----- AGENT PATCH END -----"
 
-  # Intento robusto (3-way)
-  if ! git apply --3way agent.patch; then
-    echo "ERROR: Patch did not apply even with --3way."
-    exit 1
-  fi
-else
-  echo "Agent returned empty patch."
-fi
+          if [ -s agent.patch ]; then
+            echo "----- AGENT PATCH BEGIN -----"
+            cat agent.patch
+            echo "----- AGENT PATCH END -----"
 
+            if ! git apply --3way agent.patch; then
+              echo "ERROR: Patch did not apply even with --3way."
+              exit 1
+            fi
+          else
+            echo "Agent returned empty patch."
+          fi
 
-          # 4) Build check
           npm run build
 
-          # 5) Commit y PR (solo si hay cambios)
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
             git commit -m "chore: agent patch for tasks"
             git push -u origin "$BRANCH"
+
             gh pr create \
               --title "Agent: apply AGENT_TASKS.md" \
               --body "PR generado automáticamente por Agent workflow. CI debe pasar." \
