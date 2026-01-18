@@ -1,13 +1,11 @@
 name: Agent (PR-driven)
 
 on:
-  # Automático: cuando tú actualices el plan de trabajo (sin tocar código)
   push:
     branches: [main]
     paths:
       - "AGENT_TASKS.md"
 
-  # Manual: por si quieres forzar una ejecución con una instrucción puntual
   workflow_dispatch:
     inputs:
       instruction:
@@ -33,7 +31,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Memoria simple entre ejecuciones (evita repetir errores caros)
+      # Memoria simple (evita repetir errores caros)
       - name: Restore agent state cache
         uses: actions/cache@v4
         with:
@@ -59,17 +57,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1) Rama de trabajo
           BRANCH="agent/run-${GITHUB_RUN_ID}"
           git checkout -b "$BRANCH"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 2) Ejecutar agente (con memoria + protección anti-errores repetidos)
           python3 - <<'PY'
           import os, json, sys, pathlib, urllib.request, urllib.error, subprocess, datetime
 
-          # ---------- helpers ----------
           def now_iso():
               return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -88,7 +83,6 @@ jobs:
               print(msg, file=sys.stderr)
               sys.exit(code)
 
-          # ---------- load state (cached) ----------
           state_path = pathlib.Path(".agent/state.json")
           state = {}
           if state_path.exists():
@@ -104,7 +98,6 @@ jobs:
           state.setdefault("same_error_streak", 0)
           state.setdefault("openai_calls_total", 0)
 
-          # Reset daily counter
           today = datetime.date.today().isoformat()
           if state.get("last_run_date") != today:
               state["runs_today"] = 0
@@ -114,11 +107,9 @@ jobs:
           state["runs_total"] += 1
           state["runs_today"] += 1
 
-          # Si se repite el MISMO error 2 veces seguidas, paramos para no gastar.
           if state.get("same_error_streak", 0) >= 2 and state.get("last_error"):
-              safe_exit(f"STOP: mismo error repetido 2 veces ({state['last_error']}). Evito otra ejecución para no generar más coste.", 2)
+              safe_exit(f"STOP: mismo error repetido 2 veces ({state['last_error']}). Evito más coste.", 2)
 
-          # ---------- input ----------
           api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
           if not api_key:
               state["last_error"] = "MISSING_OPENAI_API_KEY"
@@ -127,7 +118,6 @@ jobs:
               safe_exit("ERROR: Falta el secret OPENAI_API_KEY en GitHub.", 2)
 
           extra_instruction = (os.environ.get("INSTRUCTION") or "").strip()
-
           agent_tasks = read_text("AGENT_TASKS.md").strip()
           if not agent_tasks:
               state["last_error"] = "MISSING_AGENT_TASKS"
@@ -135,12 +125,10 @@ jobs:
               write_text(state_path, json.dumps(state, indent=2))
               safe_exit("ERROR: AGENT_TASKS.md está vacío o no existe.", 2)
 
-          # ---------- scope rules ----------
           ALLOW_PREFIXES = ("app/", "components/")
           DENY_PREFIXES = (".github/",)
           DENY_EXACT = ("AGENT_TASKS.md",)
 
-          # ---------- provide real context to avoid hallucinations ----------
           context_files = [
               "app/layout.tsx",
               "app/page.tsx",
@@ -155,23 +143,16 @@ jobs:
           except Exception:
               file_list = ""
 
-          # ---------- prompt ----------
           system = (
-              "Eres un agente de ingeniería de software para un repo Next.js (App Router).\n"
-              "Devuelve EXCLUSIVAMENTE un JSON válido (sin markdown) con este formato:\n"
-              "{\n"
-              '  \"files\": {\n'
-              '    \"ruta/archivo.tsx\": \"CONTENIDO COMPLETO DEL ARCHIVO\",\n'
-              '    \"ruta/otro.css\": \"CONTENIDO COMPLETO\"\n'
-              "  }\n"
-              "}\n\n"
-              "Reglas estrictas:\n"
-              "- Devuelve ARCHIVOS COMPLETOS, no diff.\n"
-              "- Cambios mínimos para cumplir Phase 1 definida en AGENT_TASKS.md.\n"
-              "- No rompas el build: debe pasar `npm run build`.\n"
-              "- Prohibido modificar .github/ y AGENT_TASKS.md.\n"
-              "- Solo puedes crear/modificar rutas bajo app/ y components/.\n"
-              "- Si no hace falta cambiar nada, devuelve {\"files\":{}}.\n"
+              "Eres un agente de ingeniería para un repo Next.js (App Router).\n"
+              "Devuelve SOLO JSON válido (sin markdown) con:\n"
+              "{ \"files\": { \"ruta\": \"CONTENIDO_COMPLETO\" } }\n"
+              "Reglas:\n"
+              "- ARCHIVOS COMPLETOS (no diff).\n"
+              "- Cambios mínimos para Phase 1.\n"
+              "- No tocar .github/ ni AGENT_TASKS.md.\n"
+              "- Solo app/ y components/.\n"
+              "- Si no hace falta, devuelve {\"files\":{}}.\n"
           )
 
           user = {
@@ -194,7 +175,6 @@ jobs:
               ],
           }
 
-          # ---------- call OpenAI ----------
           req = urllib.request.Request(
               "https://api.openai.com/v1/responses",
               data=json.dumps(payload).encode("utf-8"),
@@ -224,7 +204,6 @@ jobs:
               print("OPENAI_ERROR_BODY_END", file=sys.stderr)
               safe_exit(f"ERROR: OpenAI HTTP {e.code} {e.reason}", 1)
 
-          # ---------- extract output text ----------
           text = ""
           for item in data.get("output", []):
               if item.get("type") == "message":
@@ -251,20 +230,17 @@ jobs:
               write_text(state_path, json.dumps(state, indent=2))
               safe_exit("ERROR: El JSON debe contener un objeto 'files'.", 1)
 
-          # ---------- enforce path rules ----------
           for path in files.keys():
               if path in DENY_EXACT:
-                  safe_exit(f"ERROR: Ruta prohibida en output: {path}", 1)
+                  safe_exit(f"ERROR: Ruta prohibida: {path}", 1)
               if path.startswith(DENY_PREFIXES):
-                  safe_exit(f"ERROR: Prefijo prohibido en output: {path}", 1)
+                  safe_exit(f"ERROR: Prefijo prohibido: {path}", 1)
               if not path.startswith(ALLOW_PREFIXES):
-                  safe_exit(f"ERROR: Ruta fuera de alcance (solo app/ y components/): {path}", 1)
+                  safe_exit(f"ERROR: Fuera de alcance (solo app/ y components/): {path}", 1)
 
-          # ---------- write files ----------
           for path, content in files.items():
               write_text(path, content)
 
-          # Guardar estado “OK”
           state["last_error"] = ""
           state["same_error_streak"] = 0
           state["last_run_at"] = now_iso()
@@ -274,10 +250,8 @@ jobs:
           print("WROTE_FILES:", ", ".join(sorted(files.keys())) if files else "(none)")
           PY
 
-          # 3) Build gate: si no compila, no hay PR
           npm run build
 
-          # 4) PR + comentario resumen (esto es tu “entrega” automática)
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
             git commit -m "agent: Phase 1 changes"
@@ -291,23 +265,21 @@ jobs:
               --json url \
               --jq .url)"
 
-            # Resumen (muy útil para que “me deje el resultado”)
             WROTE="$(python3 -c "import json;print(', '.join(json.load(open('.agent/state.json')).get('last_written_files', [])) or '(none)')")"
             RUNS_TODAY="$(python3 -c "import json;print(json.load(open('.agent/state.json')).get('runs_today', 0))")"
             CALLS_TOTAL="$(python3 -c "import json;print(json.load(open('.agent/state.json')).get('openai_calls_total', 0))")"
 
-            BODY=$(cat <<'EOF'
+            BODY="$(cat <<EOF
 ✅ **Agent run completed**
-- **Branch:** `$BRANCH`
-- **Build:** PASS (`npm run build`)
+- **Branch:** \`$BRANCH\`
+- **Build:** PASS (\`npm run build\`)
 - **Files written:** $WROTE
 - **Runs today:** $RUNS_TODAY
 - **OpenAI calls total (agent memory):** $CALLS_TOTAL
 EOF
-            )
+            )"
 
             gh pr comment "$PR_URL" --body "$BODY"
-
             echo "PR created: $PR_URL"
           else
             echo "No changes"
@@ -318,4 +290,7 @@ EOF
         uses: actions/cache@v4
         with:
           path: .agent/state.json
-          key: agent-state-main
+          key: agent-state-main-${{ github.run_id }}
+          restore-keys: |
+            agent-state-main
+            agent-state-
