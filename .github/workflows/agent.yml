@@ -1,11 +1,13 @@
 name: Agent (PR-driven)
 
 on:
+  # Automático: cuando tú actualices el plan de trabajo (sin tocar código)
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - "AGENT_TASKS.md"
+
+  # Manual: por si quieres forzar una ejecución con una instrucción puntual
   workflow_dispatch:
     inputs:
       instruction:
@@ -17,6 +19,10 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: agent-pr-driven-main
+  cancel-in-progress: false
+
 jobs:
   agent:
     runs-on: ubuntu-latest
@@ -24,6 +30,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Memoria simple entre ejecuciones (evita repetir errores caros)
+      - name: Restore agent state cache
+        uses: actions/cache@v4
+        with:
+          path: .agent/state.json
+          key: agent-state-main
+          restore-keys: |
+            agent-state-
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -34,7 +51,7 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      - name: Run agent (write files, build, PR)
+      - name: Run agent (plan -> changes -> build -> PR -> comment)
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           INSTRUCTION: ${{ inputs.instruction }}
@@ -42,59 +59,104 @@ jobs:
         run: |
           set -euo pipefail
 
+          # 1) Rama de trabajo
           BRANCH="agent/run-${GITHUB_RUN_ID}"
           git checkout -b "$BRANCH"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          # 2) Ejecutar agente (con memoria + protección anti-errores repetidos)
           python3 - <<'PY'
-          import os, json, sys, urllib.request, urllib.error, pathlib, subprocess
+          import os, json, sys, pathlib, urllib.request, urllib.error, subprocess, datetime
 
-          # --- Secrets / inputs ---
-          api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+          # ---------- helpers ----------
+          def now_iso():
+              return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+          def read_text(path):
+              try:
+                  return pathlib.Path(path).read_text(encoding="utf-8")
+              except FileNotFoundError:
+                  return ""
+
+          def write_text(path, content):
+              p = pathlib.Path(path)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(content, encoding="utf-8")
+
+          def safe_exit(msg, code=1):
+              print(msg, file=sys.stderr)
+              sys.exit(code)
+
+          # ---------- load state (cached) ----------
+          state_path = pathlib.Path(".agent/state.json")
+          state = {}
+          if state_path.exists():
+              try:
+                  state = json.loads(state_path.read_text(encoding="utf-8"))
+              except Exception:
+                  state = {}
+
+          state.setdefault("runs_total", 0)
+          state.setdefault("runs_today", 0)
+          state.setdefault("last_run_date", "")
+          state.setdefault("last_error", "")
+          state.setdefault("same_error_streak", 0)
+          state.setdefault("openai_calls_total", 0)
+
+          # Reset daily counter
+          today = datetime.date.today().isoformat()
+          if state.get("last_run_date") != today:
+              state["runs_today"] = 0
+              state["same_error_streak"] = 0
+              state["last_run_date"] = today
+
+          state["runs_total"] += 1
+          state["runs_today"] += 1
+
+          # Si se repite el MISMO error 2 veces seguidas, paramos para no gastar.
+          # (Esto te ahorra justo el patrón “prueba y error” que genera cargos.)
+          if state.get("same_error_streak", 0) >= 2 and state.get("last_error"):
+              safe_exit(f"STOP: mismo error repetido 2 veces ({state['last_error']}). Evito otra ejecución para no generar más coste.", 2)
+
+          # ---------- input ----------
+          api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
           if not api_key:
-              print("ERROR: Missing OPENAI_API_KEY secret in GitHub.", file=sys.stderr)
-              sys.exit(2)
+              state["last_error"] = "MISSING_OPENAI_API_KEY"
+              state["same_error_streak"] = state.get("same_error_streak", 0) + 1
+              write_text(state_path, json.dumps(state, indent=2))
+              safe_exit("ERROR: Falta el secret OPENAI_API_KEY en GitHub.", 2)
 
-          instruction = (os.environ.get("INSTRUCTION") or "").strip()
+          extra_instruction = (os.environ.get("INSTRUCTION") or "").strip()
 
-          # --- Read AGENT_TASKS.md (source of truth) ---
-          try:
-              with open("AGENT_TASKS.md", "r", encoding="utf-8") as f:
-                  agent_tasks = f.read().strip()
-          except FileNotFoundError:
-              agent_tasks = ""
+          agent_tasks = read_text("AGENT_TASKS.md").strip()
+          if not agent_tasks:
+              state["last_error"] = "MISSING_AGENT_TASKS"
+              state["same_error_streak"] = state.get("same_error_streak", 0) + 1
+              write_text(state_path, json.dumps(state, indent=2))
+              safe_exit("ERROR: AGENT_TASKS.md está vacío o no existe.", 2)
 
-          # --- Collect limited real file context to avoid hallucinations ---
-          # Allow the agent to edit/create in these prefixes only:
+          # ---------- scope rules ----------
           ALLOW_PREFIXES = ("app/", "components/")
-          # Never allow these:
           DENY_PREFIXES = (".github/",)
+          DENY_EXACT = ("AGENT_TASKS.md",)
 
-          # Provide the model with the current content of key files (if they exist)
-          CONTEXT_FILES = [
+          # ---------- provide real context to avoid hallucinations ----------
+          context_files = [
               "app/layout.tsx",
               "app/page.tsx",
               "app/globals.css",
               "components/Header.tsx",
               "components/Footer.tsx",
           ]
+          current_files = {p: read_text(p) for p in context_files}
 
-          files_content = {}
-          for p in CONTEXT_FILES:
-              try:
-                  with open(p, "r", encoding="utf-8") as f:
-                      files_content[p] = f.read()
-              except FileNotFoundError:
-                  # Keep absent files as empty so model can create them if needed
-                  files_content[p] = ""
-
-          # Also give a repo file list for orientation (no file contents, just names)
           try:
               file_list = subprocess.check_output(["git", "ls-files"], text=True)
           except Exception:
               file_list = ""
 
+          # ---------- prompt ----------
           system = (
               "Eres un agente de ingeniería de software para un repo Next.js (App Router).\n"
               "Devuelve EXCLUSIVAMENTE un JSON válido (sin markdown) con este formato:\n"
@@ -106,23 +168,23 @@ jobs:
               "}\n\n"
               "Reglas estrictas:\n"
               "- Devuelve ARCHIVOS COMPLETOS, no diff.\n"
-              "- Cambios mínimos para cumplir AGENT_TASKS.md Phase 1.\n"
+              "- Cambios mínimos para cumplir Phase 1 definida en AGENT_TASKS.md.\n"
               "- No rompas el build: debe pasar `npm run build`.\n"
-              "- No toques Supabase schemas.\n"
-              "- NO modifiques nada bajo .github/.\n"
-              "- Puedes crear/modificar solo rutas bajo app/ y components/.\n"
+              "- Prohibido modificar .github/ y AGENT_TASKS.md.\n"
+              "- Solo puedes crear/modificar rutas bajo app/ y components/.\n"
+              "- Si no hace falta cambiar nada, devuelve {\"files\":{}}.\n"
           )
 
           user = {
               "repo_file_list": file_list,
               "agent_tasks_md": agent_tasks,
-              "extra_instruction": instruction,
-              "current_files": files_content,
+              "extra_instruction": extra_instruction if extra_instruction else "(none)",
+              "current_files": current_files,
               "scope": {
                   "allowed_prefixes": list(ALLOW_PREFIXES),
                   "denied_prefixes": list(DENY_PREFIXES),
-                  "note": "Solo app/ y components/; nada de .github/ ni cambios fuera de alcance."
-              }
+                  "denied_exact": list(DENY_EXACT),
+              },
           }
 
           payload = {
@@ -133,6 +195,7 @@ jobs:
               ],
           }
 
+          # ---------- call OpenAI ----------
           req = urllib.request.Request(
               "https://api.openai.com/v1/responses",
               data=json.dumps(payload).encode("utf-8"),
@@ -143,6 +206,8 @@ jobs:
               method="POST",
           )
 
+          state["openai_calls_total"] += 1
+
           try:
               with urllib.request.urlopen(req) as r:
                   data = json.loads(r.read().decode("utf-8"))
@@ -152,68 +217,102 @@ jobs:
                   body = e.read().decode("utf-8")
               except Exception:
                   body = "<could not read error body>"
-              print(f"OPENAI_HTTP_ERROR: {e.code} {e.reason}", file=sys.stderr)
+              state["last_error"] = f"OPENAI_HTTP_{e.code}"
+              state["same_error_streak"] = state.get("same_error_streak", 0) + 1
+              write_text(state_path, json.dumps(state, indent=2))
               print("OPENAI_ERROR_BODY_BEGIN", file=sys.stderr)
               print(body, file=sys.stderr)
               print("OPENAI_ERROR_BODY_END", file=sys.stderr)
-              sys.exit(1)
+              safe_exit(f"ERROR: OpenAI HTTP {e.code} {e.reason}", 1)
 
-          # Extract assistant plain text
+          # ---------- extract output text ----------
           text = ""
           for item in data.get("output", []):
               if item.get("type") == "message":
                   for c in item.get("content", []):
                       if c.get("type") == "output_text":
                           text += c.get("text", "")
-
           text = text.strip()
-          if not text:
-              print("ERROR: Empty model output", file=sys.stderr)
-              sys.exit(1)
 
-          # Parse JSON result
           try:
-              result = json.loads(text)
+              result = json.loads(text) if text else {"files": {}}
           except json.JSONDecodeError:
-              print("ERROR: Model did not return valid JSON.", file=sys.stderr)
+              state["last_error"] = "MODEL_INVALID_JSON"
+              state["same_error_streak"] = state.get("same_error_streak", 0) + 1
+              write_text(state_path, json.dumps(state, indent=2))
               print("MODEL_OUTPUT_BEGIN", file=sys.stderr)
               print(text, file=sys.stderr)
               print("MODEL_OUTPUT_END", file=sys.stderr)
-              sys.exit(1)
+              safe_exit("ERROR: El modelo no devolvió JSON válido.", 1)
 
           files = result.get("files", {})
           if not isinstance(files, dict):
-              print("ERROR: JSON must contain 'files' object.", file=sys.stderr)
-              sys.exit(1)
+              state["last_error"] = "MODEL_BAD_SCHEMA"
+              state["same_error_streak"] = state.get("same_error_streak", 0) + 1
+              write_text(state_path, json.dumps(state, indent=2))
+              safe_exit("ERROR: El JSON debe contener un objeto 'files'.", 1)
 
-          # Enforce path allow/deny rules before writing anything
+          # ---------- enforce path rules ----------
           for path in files.keys():
+              if path in DENY_EXACT:
+                  safe_exit(f"ERROR: Ruta prohibida en output: {path}", 1)
               if path.startswith(DENY_PREFIXES):
-                  raise SystemExit(f"ERROR: Denied path in output: {path}")
+                  safe_exit(f"ERROR: Prefijo prohibido en output: {path}", 1)
               if not path.startswith(ALLOW_PREFIXES):
-                  raise SystemExit(f"ERROR: Path outside allowed prefixes (app/, components/): {path}")
+                  safe_exit(f"ERROR: Ruta fuera de alcance (solo app/ y components/): {path}", 1)
 
-          # Write files
+          # ---------- write files ----------
           for path, content in files.items():
-              pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
-              with open(path, "w", encoding="utf-8") as f:
-                  f.write(content)
+              write_text(path, content)
 
-          print("Wrote files:", ", ".join(sorted(files.keys())))
+          # Guardar estado “OK”
+          state["last_error"] = ""
+          state["same_error_streak"] = 0
+          state["last_run_at"] = now_iso()
+          state["last_written_files"] = sorted(list(files.keys()))
+          write_text(state_path, json.dumps(state, indent=2))
+
+          print("WROTE_FILES:", ", ".join(sorted(files.keys())) if files else "(none)")
           PY
 
+          # 3) Build gate: si no compila, no hay PR
           npm run build
 
+          # 4) PR + comentario resumen (esto es tu “entrega” automática)
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
-            git commit -m "agent: apply AGENT_TASKS.md Phase 1"
+            git commit -m "agent: Phase 1 changes"
             git push -u origin "$BRANCH"
 
-            gh pr create \
+            PR_URL="$(gh pr create \
               --title "Agent: Phase 1 (AGENT_TASKS.md)" \
-              --body "PR generado automáticamente por el agente a partir de AGENT_TASKS.md (Phase 1). Build verificado." \
+              --body "PR generado automáticamente por el agente. Build verificado." \
               --base main \
-              --head "$BRANCH"
+              --head "$BRANCH" \
+              --json url \
+              --jq .url)"
+
+            # Resumen (muy útil para que “me deje el resultado”)
+            WROTE="$(python3 -c "import json;print(', '.join(json.load(open('.agent/state.json')) .get('last_written_files', [])) or '(none)')")"
+            RUNS_TODAY="$(python3 -c "import json;print(json.load(open('.agent/state.json')).get('runs_today', 0))")"
+            CALLS_TOTAL="$(python3 -c "import json;print(json.load(open('.agent/state.json')).get('openai_calls_total', 0))")"
+
+            gh pr comment "$PR_URL" --body "✅ **Agent run completed**  
+- **Branch:** \`$BRANCH\`  
+- **Build:** PASS (\`npm run build\`)  
+- **Files written:** $WROTE  
+- **Runs today:** $RUNS_TODAY  
+- **OpenAI calls total (agent memory):** $CALLS_TOTAL  
+"
+
+            echo "PR created: $PR_URL"
           else
             echo "No changes"
           fi
+
+      - name: Save agent state cache
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: .agent/state.json
+          key: agent-state-main
