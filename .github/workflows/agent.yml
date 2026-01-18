@@ -47,27 +47,35 @@ jobs:
 
           # 3) Generar DIFF con OpenAI (sin volcar secretos)
           python3 - <<'PY'
-          import os, json, subprocess, textwrap, sys, urllib.request
+          import os, json, sys, urllib.request
 
-          api_key = os.environ.get("OPENAI_API_KEY","").strip()
+          api_key = os.environ.get("OPENAI_API_KEY", "").strip()
           if not api_key:
-            print("ERROR: Missing OPENAI_API_KEY secret in GitHub.", file=sys.stderr)
-            sys.exit(2)
+              print("ERROR: Missing OPENAI_API_KEY secret in GitHub.", file=sys.stderr)
+              sys.exit(2)
 
-          instruction = os.environ.get("INSTRUCTION","").strip()
-          tasks = os.popen("cat AGENT_TASKS.md 2>/dev/null").read().strip()
+          instruction = os.environ.get("INSTRUCTION", "").strip()
+
+          try:
+              with open("AGENT_TASKS.md", "r", encoding="utf-8") as f:
+                  tasks = f.read().strip()
+          except FileNotFoundError:
+              tasks = "No AGENT_TASKS.md found"
 
           # Lista de archivos (para dar contexto sin mandar el repo entero)
-          file_list = os.popen("git ls-files").read()
+          import subprocess
+          file_list = subprocess.check_output(["git", "ls-files"], text=True)
 
-          system = """Eres un agente de ingeniería de software.
-          Devuelve SOLO un patch en formato unified diff (git apply compatible).
-          Reglas:
-          - No incluyas secretos ni valores reales.
-          - No modifiques .github/workflows/*.
-          - Si necesitas env vars, documenta en .env.example y usa process.env.
-          - Cambios mínimos para que `npm run build` pase.
-          - Si no hay nada que cambiar, devuelve un diff vacío (sin texto adicional)."""
+          system = (
+              "Eres un agente de ingeniería de software.\n"
+              "Devuelve SOLO un patch en formato unified diff (git apply compatible).\n"
+              "Reglas:\n"
+              "- No incluyas secretos ni valores reales.\n"
+              "- No modifiques .github/workflows/*.\n"
+              "- Si necesitas env vars, documenta en .env.example y usa process.env.\n"
+              "- Cambios mínimos para que `npm run build` pase.\n"
+              "- Si no hay nada que cambiar, devuelve un diff vacío (sin texto adicional)."
+          )
 
           user = f"""
           Repo file list:
@@ -82,40 +90,40 @@ jobs:
           Objetivo: producir un patch mínimo para cumplir tareas sin romper build.
           """
 
-  payload = {
-  "model": "gpt-4o-mini",
-  "input": [
-    {"role":"system","content":[{"type":"input_text","text":system}]},
-    {"role":"user","content":[{"type":"input_text","text":user}]}
-  ]
-}
+          payload = {
+              "model": "gpt-4o-mini",
+              "input": [
+                  {"role": "system", "content": [{"type": "input_text", "text": system}]},
+                  {"role": "user", "content": [{"type": "input_text", "text": user}]},
+              ],
+          }
 
           req = urllib.request.Request(
-            "https://api.openai.com/v1/responses",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-              "Authorization": f"Bearer {api_key}",
-              "Content-Type": "application/json"
-            },
-            method="POST"
+              "https://api.openai.com/v1/responses",
+              data=json.dumps(payload).encode("utf-8"),
+              headers={
+                  "Authorization": f"Bearer {api_key}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
           )
 
           with urllib.request.urlopen(req) as r:
-            data = json.loads(r.read().decode("utf-8"))
+              data = json.loads(r.read().decode("utf-8"))
 
-          # Extraer texto final
+          # Extraer texto final (unified diff)
           out = ""
           for item in data.get("output", []):
-            if item.get("type") == "message":
-              for c in item.get("content", []):
-                if c.get("type") == "output_text":
-                  out += c.get("text","")
+              if item.get("type") == "message":
+                  for c in item.get("content", []):
+                      if c.get("type") == "output_text":
+                          out += c.get("text", "")
 
           patch = out.strip()
 
           # Guardar patch (puede ser vacío)
-          with open("agent.patch","w",encoding="utf-8") as f:
-            f.write(patch + ("\n" if patch else ""))
+          with open("agent.patch", "w", encoding="utf-8") as f:
+              f.write(patch + ("\n" if patch else ""))
 
           print("Patch length:", len(patch))
           PY
