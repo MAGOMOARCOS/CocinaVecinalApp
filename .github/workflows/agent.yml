@@ -1,7 +1,7 @@
 name: Agent (PR-driven)
 
 on:
-  # Automático: cuando tú actualices el plan de trabajo (sin tocar código)
+  # Automático: cuando tú actualices el plan de trabajo (sin  tocar código)
   push:
     branches: [main]
     paths:
