@@ -1,7 +1,7 @@
 name: Agent (PR-driven)
 
 on:
-  # Automático: cuando tú actualices el plan de trabajo (sin  tocar código)
+  # Automático: cuando tú actualices el plan de trabajo (sin tocar código)
   push:
     branches: [main]
     paths:
@@ -115,7 +115,6 @@ jobs:
           state["runs_today"] += 1
 
           # Si se repite el MISMO error 2 veces seguidas, paramos para no gastar.
-          # (Esto te ahorra justo el patrón “prueba y error” que genera cargos.)
           if state.get("same_error_streak", 0) >= 2 and state.get("last_error"):
               safe_exit(f"STOP: mismo error repetido 2 veces ({state['last_error']}). Evito otra ejecución para no generar más coste.", 2)
 
@@ -293,17 +292,21 @@ jobs:
               --jq .url)"
 
             # Resumen (muy útil para que “me deje el resultado”)
-            WROTE="$(python3 -c "import json;print(', '.join(json.load(open('.agent/state.json')) .get('last_written_files', [])) or '(none)')")"
+            WROTE="$(python3 -c "import json;print(', '.join(json.load(open('.agent/state.json')).get('last_written_files', [])) or '(none)')")"
             RUNS_TODAY="$(python3 -c "import json;print(json.load(open('.agent/state.json')).get('runs_today', 0))")"
             CALLS_TOTAL="$(python3 -c "import json;print(json.load(open('.agent/state.json')).get('openai_calls_total', 0))")"
 
-            gh pr comment "$PR_URL" --body "✅ **Agent run completed**  
-- **Branch:** \`$BRANCH\`  
-- **Build:** PASS (\`npm run build\`)  
-- **Files written:** $WROTE  
-- **Runs today:** $RUNS_TODAY  
-- **OpenAI calls total (agent memory):** $CALLS_TOTAL  
-"
+            BODY=$(cat <<'EOF'
+✅ **Agent run completed**
+- **Branch:** `$BRANCH`
+- **Build:** PASS (`npm run build`)
+- **Files written:** $WROTE
+- **Runs today:** $RUNS_TODAY
+- **OpenAI calls total (agent memory):** $CALLS_TOTAL
+EOF
+            )
+
+            gh pr comment "$PR_URL" --body "$BODY"
 
             echo "PR created: $PR_URL"
           else
