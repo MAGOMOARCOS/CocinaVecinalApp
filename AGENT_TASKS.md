@@ -1,69 +1,33 @@
-\# AGENT TASKS — CocinaVecinalApp
+# Phase 1 — Base App (NO romper build)
 
+## Objetivo
+Dejar una base mínima limpia y estable para continuar fases posteriores sin fricción.
 
+## Reglas (obligatorias)
+- NO romper el build (CI debe quedar en verde).
+- NO tocar Supabase schemas / migrations / SQL.
+- NO activar Auth todavía (solo preparar estructura).
+- Mantener cambios pequeños y revisables.
+- Si falta una variable de entorno, NO fallback a strings hardcodeados: documentar y usar env vars.
 
-\## MODO DE TRABAJO (OBLIGATORIO)
+## Tareas
+1) Home sin warnings
+- Asegurar que la Home renderiza sin errores ni warnings en consola (dev/build).
+- Evitar imports no usados, keys de React, etc.
 
-\- Trabajar SIEMPRE en una rama nueva (nunca en main).
+2) Layout base
+- Implementar layout común con:
+  - Header: logo/texto “Cocina Vecinal” + links (Home / Explorar / Perfil)
+  - Footer: texto simple (copyright / enlaces básicos)
+- Debe aplicarse a todas las rutas existentes.
 
-\- Abrir Pull Request para cada cambio.
+3) Preparar estructura para Auth (sin activarla)
+- Crear estructura de carpetas/componentes para auth (por ejemplo `app/(auth)/...` o `components/auth/...`)
+- Crear un “placeholder” de sesión (por ejemplo `getSession()` que devuelva null) sin conectar aún.
+- No debe requerir claves nuevas ni romper despliegues.
 
-\- No hacer merge automático.
-
-\- Cada PR debe pasar CI (npm run build) en verde.
-
-
-
-\## PROHIBICIONES ABSOLUTAS
-
-\- NO tocar secrets, env vars ni configuraciones de Vercel.
-
-\- NO modificar workflows CI.
-
-\- NO instalar dependencias nuevas sin justificarlo en el PR.
-
-\- NO usar npm audit fix --force.
-
-\- NO eliminar código existente sin explicar el motivo.
-
-
-
-\## OBJETIVO ACTUAL
-
-Fase 1 — Base funcional sin backend:
-
-1\. Home clara (qué es Cocina Vecinal).
-
-2\. Estructura de páginas:
-
-&nbsp;  - /
-
-&nbsp;  - /explorar
-
-&nbsp;  - /perfil
-
-3\. Navegación simple entre páginas.
-
-4\. Todo debe compilar en build.
-
-
-
-\## REGLA DE ORO
-
-Si algo no está claro:
-
-\- Detenerse.
-
-\- Explicarlo en el PR.
-
-\- NO improvisar.
-
-# Phase 1 – Base App
-
-- Asegurar que la home carga sin warnings
-- Añadir layout base (header + footer)
-- Preparar estructura para auth (sin activarla aún)
-- No romper build
-- No tocar Supabase schemas todavía
-
-
+## Criterios de aceptación
+- `npm run build` OK en CI.
+- Vercel Production OK.
+- Navegación funciona (Home/Explorar/Perfil).
+- No hay warnings relevantes en consola.
