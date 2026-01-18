@@ -30,3 +30,4 @@ Criterio de aceptación:
 Entrega:
 - Hacer commit con mensaje: `feat: base layout header footer`
 - Abrir PR contra `main` con resumen de cambios.
+<!-- trigger -->
