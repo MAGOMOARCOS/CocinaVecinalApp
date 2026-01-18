@@ -42,12 +42,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 2) Construir prompt desde AGENT_TASKS.md + instrucción opcional
-          TASKS="$(cat AGENT_TASKS.md 2>/dev/null || echo 'No AGENT_TASKS.md found')"
-
-          # 3) Generar DIFF con OpenAI (sin volcar secretos)
+          # 2) Generar DIFF con OpenAI (sin volcar secretos)
           python3 - <<'PY'
-          import os, json, sys, urllib.request
+          import os, json, sys, urllib.request, urllib.error
 
           api_key = os.environ.get("OPENAI_API_KEY", "").strip()
           if not api_key:
@@ -62,7 +59,6 @@ jobs:
           except FileNotFoundError:
               tasks = "No AGENT_TASKS.md found"
 
-          # Lista de archivos (para dar contexto sin mandar el repo entero)
           import subprocess
           file_list = subprocess.check_output(["git", "ls-files"], text=True)
 
@@ -108,10 +104,23 @@ jobs:
               method="POST",
           )
 
-          with urllib.request.urlopen(req) as r:
-              data = json.loads(r.read().decode("utf-8"))
+          try:
+              with urllib.request.urlopen(req) as r:
+                  raw = r.read().decode("utf-8")
+          except urllib.error.HTTPError as e:
+              body = ""
+              try:
+                  body = e.read().decode("utf-8")
+              except Exception:
+                  body = "<could not read error body>"
+              print(f"OPENAI_HTTP_ERROR: {e.code} {e.reason}", file=sys.stderr)
+              print("OPENAI_ERROR_BODY_BEGIN", file=sys.stderr)
+              print(body, file=sys.stderr)
+              print("OPENAI_ERROR_BODY_END", file=sys.stderr)
+              sys.exit(1)
 
-          # Extraer texto final (unified diff)
+          data = json.loads(raw)
+
           out = ""
           for item in data.get("output", []):
               if item.get("type") == "message":
@@ -121,24 +130,23 @@ jobs:
 
           patch = out.strip()
 
-          # Guardar patch (puede ser vacío)
           with open("agent.patch", "w", encoding="utf-8") as f:
               f.write(patch + ("\n" if patch else ""))
 
           print("Patch length:", len(patch))
           PY
 
-          # 4) Aplicar patch (si hay)
+          # 3) Aplicar patch (si hay)
           if [ -s agent.patch ]; then
             git apply agent.patch
           else
             echo "Agent returned empty patch."
           fi
 
-          # 5) Build check
+          # 4) Build check
           npm run build
 
-          # 6) Commit y PR (solo si hay cambios)
+          # 5) Commit y PR (solo si hay cambios)
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
             git commit -m "chore: agent patch for tasks"
